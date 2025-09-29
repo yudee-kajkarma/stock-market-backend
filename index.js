@@ -1,51 +1,140 @@
+// Import required modules
 const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
 const WebSocket = require("ws").WebSocket;
 const protobuf = require("protobufjs");
 const axios = require("axios");
-const http = require("http");
-const { Server } = require("socket.io");
 const cors = require("cors");
 
+// Setup Express and Socket.io
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "*",  // For development. Restrict in production
     methods: ["GET", "POST"]
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
-// Enable CORS and JSON parsing
+// Enable CORS for REST API
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public')); // Serve static files
 
+// Initialize global variables
 let protobufRoot = null;
-let wsConnection = null;
-let marketData = {}; // Store latest market data
+let upstoxWs = null;
+const accessToken = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGRhMjQyNmM3MTBlYzNiNjk2OTVhY2IiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTEyNjU2NiwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5MTgzMjAwfQ.9yoqJ4SD9nB6arcB8XLQeZkQWkAYGPPrOQaRHDgpBb0"; 
 
-// Replace with your actual access token
-const accessToken = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGQ5NTk3YzcyOGJjMjdkMmFjY2JkZmMiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTA3NDY4NCwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5MDk2ODAwfQ.rZKsl0HuQgWtZ13J1D3MRViaVwyrkR07mcGx5A-B4Hk";
+// Function to authorize the market data feed
+const getMarketFeedUrl = async () => {
+  const url = "https://api.upstox.com/v3/feed/market-data-feed/authorize";
+  const headers = {
+    'Accept': 'application/json',
+    'Authorization': `Bearer ${accessToken}`
+  };
+  const response = await axios.get(url, { headers });
+  return response.data.data.authorizedRedirectUri;
+};
 
-// Initialize protobuf
+// Function to establish WebSocket connection
+const connectWebSocket = async (wsUrl) => {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl, {
+      followRedirects: true,
+    });
+
+    // WebSocket event handlers
+    ws.on("open", () => {
+      console.log("✅ Connected to Upstox WebSocket");
+      resolve(ws); // Resolve the promise once connected
+
+      // Set a timeout to send a subscription message after 1 second
+      setTimeout(() => {
+        const data = {
+          guid: "someguid",
+          method: "sub",
+          data: {
+            mode: "full",
+            // instrumentKeys: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50","BSE_INDEX|AUTO","NSE_INDEX|Nifty IT","NSE_FO|36702"],
+            instrumentKeys: ["NSE_FO|60907"],
+          },
+        };
+        ws.send(Buffer.from(JSON.stringify(data)));
+        console.log("📡 Sent subscription to Upstox");
+      }, 1000);
+    });
+
+    ws.on("close", () => {
+      console.log("🔌 Disconnected from Upstox WebSocket");
+      upstoxWs = null;
+    });
+
+    ws.on("message", (data) => {
+      try {
+        // Decode the protobuf message
+        const decoded = decodeProfobuf(data);
+        
+        if (decoded) {
+          // Send the decoded data to all connected Socket.IO clients
+          io.emit('marketData', decoded);
+          
+          // Extract and send LTP (Last Traded Price) data if available
+          if (decoded.feeds) {
+            const ltpData = {};
+            
+            Object.keys(decoded.feeds).forEach(key => {
+              const feed = decoded.feeds[key];
+              
+              // Try to find LTP in various possible locations
+              const ltp = feed.ltp || 
+                (feed.price && feed.price.ltp) || 
+                feed.lastTradedPrice || 
+                feed.lastPrice;
+                
+              if (ltp) {
+                ltpData[key] = ltp;
+              }
+            });
+            
+            if (Object.keys(ltpData).length > 0) {
+              io.emit('ltp', { timestamp: Date.now(), data: ltpData });
+            }
+          }
+        }
+      } catch (error) {
+        console.error("❌ Error processing message:", error);
+      }
+    });
+
+    ws.on("error", (error) => {
+      console.log("❌ Upstox WebSocket error:", error);
+      reject(error); // Reject the promise on error
+    });
+  });
+};
+
+// Function to initialize the protobuf part
 const initProtobuf = async () => {
   try {
     protobufRoot = await protobuf.load(__dirname + "/MarketDataFeedV3.proto");
     console.log("✅ Protobuf initialized successfully");
+    return true;
   } catch (error) {
     console.error("❌ Failed to initialize protobuf:", error);
+    return false;
   }
 };
 
-// Decode protobuf messages
-const decodeProtobuf = (buffer) => {
+// Function to decode protobuf message
+const decodeProfobuf = (buffer) => {
   if (!protobufRoot) {
-    console.warn("⚠️ Protobuf not initialized");
+    console.warn("⚠️ Protobuf not initialized yet!");
     return null;
   }
-  
+
   try {
     const FeedResponse = protobufRoot.lookupType(
       "com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse"
@@ -62,333 +151,79 @@ const decodeProtobuf = (buffer) => {
   }
 };
 
-// Get WebSocket feed URL
-const getMarketFeedUrl = async () => {
-  try {
-    const url = "https://api.upstox.com/v3/feed/market-data-feed/authorize";
-    const headers = {
-      Accept: "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    };
-    const response = await axios.get(url, { headers });
-    console.log("✅ Got WebSocket URL");
-    return response.data.data.authorizedRedirectUri;
-  } catch (error) {
-    console.error("❌ Failed to get WebSocket URL:", error);
-    throw error;
-  }
-};
-
-// Connect WebSocket
-const connectWebSocket = async (wsUrl) => {
-  return new Promise((resolve, reject) => {
-    console.log("🔄 Connecting to WebSocket...");
-    const ws = new WebSocket(wsUrl, { 
-      followRedirects: true,
-      headers: {
-        'User-Agent': 'Node.js WebSocket Client'
-      }
-    });
-
-    let pingInterval;
-
-    ws.on("open", () => {
-      console.log("✅ WebSocket connected successfully");
-      
-      // Send subscription message
-      const subscriptionData = {
-        guid: "someguid",
-        method: "sub",
-        data: {
-          mode: "full",
-          // instrumentKeys: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50"],
-          instrumentKeys: ["FUT"],
-        },
-      };
-      
-      console.log("📡 Sending subscription:", JSON.stringify(subscriptionData));
-      ws.send(JSON.stringify(subscriptionData));
-      
-      // Set up ping to keep connection alive
-      pingInterval = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.ping();
-        }
-      }, 30000);
-      
-      resolve(ws);
-    });
-
-    ws.on("close", (code, reason) => {
-      console.log(`🔌 WebSocket disconnected - Code: ${code}, Reason: ${reason}`);
-      if (pingInterval) clearInterval(pingInterval);
-      wsConnection = null;
-    });
-
-    ws.on("message", (data) => {
-      try {
-        console.log("📨 Raw message received, length:", data.length);
-        
-        // Try to decode as JSON first (for acknowledgments)
-        if (data[0] === 123) { // Check if starts with '{'
-          try {
-            const jsonData = JSON.parse(data.toString());
-            console.log("📋 JSON Response:", jsonData);
-            return;
-          } catch (e) {
-            // Not JSON, continue with protobuf decode
-          }
-        }
-        
-        // Decode protobuf
-        const decoded = decodeProtobuf(data);
-        if (decoded) {
-          console.log("📊 Decoded Market Data:", JSON.stringify(decoded, null, 2));
-          
-          // Store latest data
-          if (decoded.feeds) {
-            Object.keys(decoded.feeds).forEach(key => {
-              marketData[key] = {
-                ...decoded.feeds[key],
-                timestamp: new Date().toISOString()
-              };
-            });
-          }
-          
-          // Broadcast to frontend clients
-          io.emit('marketData', decoded);
-        }
-      } catch (error) {
-        console.error("❌ Error processing message:", error);
-      }
-    });
-
-    ws.on("error", (error) => {
-      console.error("❌ WebSocket error:", error);
-      if (pingInterval) clearInterval(pingInterval);
-      reject(error);
-    });
-
-    ws.on("ping", () => {
-      console.log("🏓 Received ping");
-      ws.pong();
-    });
-
-    ws.on("pong", () => {
-      console.log("🏓 Received pong");
-    });
-
-    // Timeout after 10 seconds if connection doesn't open
-    setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        console.log("⏰ Connection timeout");
-        ws.terminate();
-        reject(new Error("Connection timeout"));
-      }
-    }, 10000);
-  });
-};
-
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('👤 Frontend client connected:', socket.id);
   
-  // Send current market data to new client
-  socket.emit('marketData', marketData);
-  
+  // Handle client disconnect
   socket.on('disconnect', () => {
     console.log('👤 Frontend client disconnected:', socket.id);
+  });
+  
+  // Handle subscription requests from frontend
+  socket.on('subscribe', async (instruments) => {
+    if (!upstoxWs || upstoxWs.readyState !== WebSocket.OPEN) {
+      socket.emit('error', { message: 'WebSocket not connected' });
+      return;
+    }
+    
+    try {
+      const data = {
+        guid: "clientrequest",
+        method: "sub",
+        data: {
+          mode: "full",
+          instrumentKeys: Array.isArray(instruments) ? instruments : ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50"],
+        },
+      };
+      
+      upstoxWs.send(Buffer.from(JSON.stringify(data)));
+      socket.emit('subscribed', { instruments: data.data.instrumentKeys });
+    } catch (error) {
+      socket.emit('error', { message: 'Failed to send subscription: ' + error.message });
+    }
   });
 });
 
 // API Routes
-app.get("/start-feed", async (req, res) => {
+app.get("/start", async (req, res) => {
   try {
-    if (!wsConnection) {
-      console.log("🚀 Starting WebSocket feed...");
+    if (!upstoxWs || upstoxWs.readyState !== WebSocket.OPEN) {
+      console.log("🚀 Starting WebSocket connection...");
       const wsUrl = await getMarketFeedUrl();
-      wsConnection = await connectWebSocket(wsUrl);
-      
-      const successMessage = "WebSocket feed started and subscribed to Nifty Bank & Nifty 50!";
-      console.log("✅", successMessage);
-      res.json({ 
-        success: true, 
-        message: successMessage,
-        status: "connected"
-      });
+      upstoxWs = await connectWebSocket(wsUrl);
+      res.json({ success: true, message: "WebSocket connection started" });
     } else {
-      const alreadyRunningMessage = "WebSocket already running";
-      console.log("⚠️", alreadyRunningMessage);
-      res.json({ 
-        success: true, 
-        message: alreadyRunningMessage,
-        status: "already_connected"
-      });
+      res.json({ success: true, message: "WebSocket already connected" });
     }
-  } catch (err) {
-    console.error("❌ Failed to start WebSocket feed:", err);
-    res.status(500).json({ 
-      success: false, 
-      message: "Failed to start WebSocket feed",
-      error: err.message
-    });
-  }
-});
-
-app.get("/stop-feed", (req, res) => {
-  try {
-    if (wsConnection) {
-      wsConnection.close();
-      wsConnection = null;
-      const message = "WebSocket feed stopped";
-      console.log("🛑", message);
-      res.json({ success: true, message, status: "disconnected" });
-    } else {
-      const message = "No active WebSocket connection";
-      console.log("⚠️", message);
-      res.json({ success: false, message, status: "not_connected" });
-    }
-  } catch (err) {
-    console.error("❌ Error stopping feed:", err);
-    res.status(500).json({ 
-      success: false, 
-      message: "Error stopping feed",
-      error: err.message 
-    });
+  } catch (error) {
+    console.error("❌ Failed to start WebSocket:", error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.get("/status", (req, res) => {
-  const status = {
-    connected: wsConnection ? wsConnection.readyState === WebSocket.OPEN : false,
-    protobufInitialized: protobufRoot !== null,
-    latestData: marketData
-  };
-  res.json(status);
+  res.json({
+    connected: upstoxWs && upstoxWs.readyState === WebSocket.OPEN,
+    protobufInitialized: protobufRoot !== null
+  });
 });
 
-app.get("/latest-data", (req, res) => {
-  res.json(marketData);
-});
-
-// Serve a simple frontend
-app.get("/", (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Market Data Feed</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
-            .connected { background-color: #d4edda; color: #155724; }
-            .disconnected { background-color: #f8d7da; color: #721c24; }
-            button { padding: 10px 20px; margin: 5px; cursor: pointer; }
-            .data-container { margin-top: 20px; }
-            .data-item { background: #f8f9fa; padding: 15px; margin: 10px 0; border-left: 4px solid #007bff; }
-            pre { background: #f8f9fa; padding: 15px; overflow-x: auto; white-space: pre-wrap; }
-        </style>
-        <script src="/socket.io/socket.io.js"></script>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Market Data Feed Monitor</h1>
-            
-            <div id="status" class="status disconnected">
-                Status: Disconnected
-            </div>
-            
-            <div>
-                <button onclick="startFeed()">Start Feed</button>
-                <button onclick="stopFeed()">Stop Feed</button>
-                <button onclick="checkStatus()">Check Status</button>
-                <button onclick="clearData()">Clear Data</button>
-            </div>
-            
-            <div class="data-container">
-                <h2>Live Market Data:</h2>
-                <div id="marketData">No data received yet...</div>
-            </div>
-        </div>
-
-        <script>
-            const socket = io();
-            
-            socket.on('connect', () => {
-                console.log('Connected to server');
-                updateStatus('Connected to server', true);
-            });
-            
-            socket.on('marketData', (data) => {
-                console.log('Market data received:', data);
-                displayMarketData(data);
-            });
-            
-            socket.on('disconnect', () => {
-                console.log('Disconnected from server');
-                updateStatus('Disconnected from server', false);
-            });
-            
-            function updateStatus(message, connected) {
-                const statusEl = document.getElementById('status');
-                statusEl.textContent = \`Status: \${message}\`;
-                statusEl.className = \`status \${connected ? 'connected' : 'disconnected'}\`;
-            }
-            
-            function displayMarketData(data) {
-                const container = document.getElementById('marketData');
-                const timestamp = new Date().toLocaleTimeString();
-                container.innerHTML = \`
-                    <div class="data-item">
-                        <strong>Last Update:</strong> \${timestamp}<br>
-                        <pre>\${JSON.stringify(data, null, 2)}</pre>
-                    </div>
-                \`;
-            }
-            
-            async function startFeed() {
-                try {
-                    const response = await fetch('/start-feed');
-                    const data = await response.json();
-                    alert(data.message);
-                } catch (error) {
-                    alert('Error starting feed: ' + error.message);
-                }
-            }
-            
-            async function stopFeed() {
-                try {
-                    const response = await fetch('/stop-feed');
-                    const data = await response.json();
-                    alert(data.message);
-                } catch (error) {
-                    alert('Error stopping feed: ' + error.message);
-                }
-            }
-            
-            async function checkStatus() {
-                try {
-                    const response = await fetch('/status');
-                    const data = await response.json();
-                    alert(JSON.stringify(data, null, 2));
-                } catch (error) {
-                    alert('Error checking status: ' + error.message);
-                }
-            }
-            
-            function clearData() {
-                document.getElementById('marketData').innerHTML = 'No data received yet...';
-            }
-        </script>
-    </body>
-    </html>
-  `);
-});
-
-// Start server
-server.listen(PORT, async () => {
-  await initProtobuf();
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📊 Market data will be displayed at http://localhost:${PORT}`);
-});
+// Start server and initialize
+(async () => {
+  try {
+    // Initialize protobuf first
+    await initProtobuf();
+    
+    // Start the server
+    server.listen(PORT, () => {
+      console.log(`🚀 Server running on http://localhost:${PORT}`);
+    });
+    
+    // Auto-connect to Upstox WebSocket on startup
+    const wsUrl = await getMarketFeedUrl();
+    upstoxWs = await connectWebSocket(wsUrl);
+  } catch (error) {
+    console.error("❌ Startup error:", error);
+  }
+})();
