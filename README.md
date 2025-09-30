@@ -10,6 +10,8 @@ A Node.js and Express backend API for stock market data, designed for deployment
 - 🚀 Vercel deployment ready
 - 📝 Health check endpoint
 - 🛡️ Error handling middleware
+- 📈 52-week high/low calculation job
+- 🗄️ Supabase integration for data storage
 
 ## API Endpoints
 
@@ -25,6 +27,8 @@ A Node.js and Express backend API for stock market data, designed for deployment
 | GET | `/api/health` | Health check endpoint |
 | GET | `/api/stocks` | Get all available stocks |
 | GET | `/api/stocks/:symbol` | Get specific stock by symbol |
+| GET | `/run-highlow-job` | Manually trigger the 52-week high/low calculation job |
+| GET | `/health` | Health check endpoint for the 52-week high/low job |
 
 ### Example Responses
 
@@ -97,6 +101,9 @@ Response:
    ```env
    NODE_ENV=development
    PORT=3000
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+   UPSTOX_ACCESS_TOKEN=your_upstox_access_token
    ```
 
 4. **Start the development server**
@@ -178,6 +185,7 @@ Response:
 ```
 stock-market-api/
 ├── index.js              # Main Express server
+├── stock-highlow-job.js  # 52-week high/low job
 ├── package.json          # Dependencies and scripts
 ├── vercel.json          # Vercel deployment configuration
 ├── env.example          # Environment variables template
@@ -185,22 +193,65 @@ stock-market-api/
 └── README.md            # This file
 ```
 
-## Adding Real Stock Data
+## 52-Week High/Low Job
 
-To integrate with real stock market APIs, you can:
+This project includes a scheduled job that calculates the 52-week high and low values for specified stock instruments using the Upstox Historical Candle Data API. The results are stored in a Supabase table.
+
+### Features
+
+- Automatically runs every weekday at 3:35 PM IST
+- Calculates 52-week high and low for specified stock instruments
+- Stores results in a Supabase database
+- Includes manual trigger endpoint for on-demand updates
+- Comprehensive error handling and logging
+
+### Setup Instructions
+
+1. **Create the Supabase table:**
+   ```sql
+   CREATE TABLE stock_highlow (
+     instrument_key VARCHAR PRIMARY KEY,
+     high NUMERIC NOT NULL,
+     low NUMERIC NOT NULL,
+     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+   );
+   ```
+
+2. **Configure environment variables:**
+   ```env
+   SUPABASE_URL=your_supabase_url
+   SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+   UPSTOX_ACCESS_TOKEN=your_upstox_access_token
+   ```
+
+3. **Run the job as a standalone server:**
+   ```bash
+   node stock-highlow-job.js
+   ```
+
+4. **Manually trigger the job:**
+   ```bash
+   curl http://localhost:3002/run-highlow-job
+   ```
+
+## Adding Additional Stock Data
+
+To integrate with other stock market APIs, you can:
 
 1. **Sign up for free APIs:**
    - [Alpha Vantage](https://www.alphavantage.co/) - Free tier available
    - [Finnhub](https://finnhub.io/) - Free tier available
    - [Polygon.io](https://polygon.io/) - Free tier available
+   - [Upstox](https://upstox.com/) - API access available
 
 2. **Add API keys to environment variables:**
    ```env
    ALPHA_VANTAGE_API_KEY=your_key_here
    FINNHUB_API_KEY=your_key_here
+   UPSTOX_ACCESS_TOKEN=your_upstox_token
    ```
 
-3. **Update the stock endpoints in `index.js` to fetch real data**
+3. **Update the endpoints to fetch real data**
 
 ## Scripts
 
@@ -208,6 +259,7 @@ To integrate with real stock market APIs, you can:
 - `npm run dev` - Start development server with nodemon
 - `npm run build` - Build script (for Vercel)
 - `npm run vercel-build` - Vercel build script
+- `node stock-highlow-job.js` - Run the 52-week high/low job as a standalone server
 
 ## Contributing
 

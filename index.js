@@ -12,9 +12,9 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",  // For development. Restrict in production
-    methods: ["GET", "POST"]
-  }
+    origin: "*", // For development. Restrict in production
+    methods: ["GET", "POST"],
+  },
 });
 
 const PORT = process.env.PORT || 3001;
@@ -26,14 +26,15 @@ app.use(express.json());
 // Initialize global variables
 let protobufRoot = null;
 let upstoxWs = null;
-const accessToken = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGRiNjIwODBiN2NlNzBmNzFmOWQ5MWEiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTIwNzk0NCwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5MjY5NjAwfQ.6UBxbTcllqnnMrpCIaPgvhScQm9K7XD45d85mtRVGpQ"; 
+const accessToken =
+  "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGRiNjIwODBiN2NlNzBmNzFmOWQ5MWEiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTIwNzk0NCwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5MjY5NjAwfQ.6UBxbTcllqnnMrpCIaPgvhScQm9K7XD45d85mtRVGpQ";
 
 // Function to authorize the market data feed
 const getMarketFeedUrl = async () => {
   const url = "https://api.upstox.com/v3/feed/market-data-feed/authorize";
   const headers = {
-    'Accept': 'application/json',
-    'Authorization': `Bearer ${accessToken}`
+    Accept: "application/json",
+    Authorization: `Bearer ${accessToken}`,
   };
   const response = await axios.get(url, { headers });
   return response.data.data.authorizedRedirectUri;
@@ -58,7 +59,16 @@ const connectWebSocket = async (wsUrl) => {
           method: "sub",
           data: {
             mode: "full",
-            instrumentKeys: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50","BSE_INDEX|AUTO","NSE_INDEX|Nifty IT","NSE_FO|36702","NSE_EQ|INE002A01018","NSE_INDEX|Nifty Midcap 100","NSE_EQ|INE040A01034"],
+            instrumentKeys: [
+              "NSE_INDEX|Nifty Bank",
+              "NSE_INDEX|Nifty 50",
+              "NSE_INDEX|Nifty IT",
+              "NSE_EQ|INE002A01018", // RELIANCE
+              "NSE_EQ|INE040A01034", // HDFC BANK
+              "NSE_EQ|INE009A01021", // INFOSYS
+              "NSE_EQ|INE030A01027", // BHARTI AIRTEL
+              "NSE_EQ|INE062A01020",
+            ],
             // instrumentKeys: ["NSE_FO|60907"],
           },
         };
@@ -76,29 +86,36 @@ const connectWebSocket = async (wsUrl) => {
       try {
         // Decode the protobuf message
         const decoded = decodeProfobuf(data);
-        
+
         if (decoded) {
           // Log the decoded data structure for debugging
           // console.log("Decoded data structure:", JSON.stringify(decoded, null, 2));
-          
+
           // Send the decoded data to all connected Socket.IO clients
-          io.emit('marketData', decoded);
-          
+          io.emit("marketData", decoded);
+
           // Extract and send LTP (Last Traded Price) data if available
           if (decoded.feeds) {
             const ltpData = {};
-            
-            Object.keys(decoded.feeds).forEach(key => {
+
+            Object.keys(decoded.feeds).forEach((key) => {
               const feed = decoded.feeds[key];
-              console.log(`Processing feed for ${key}:`, JSON.stringify(feed, null, 2));
-              
+              console.log(
+                `Processing feed for ${key}:`,
+                JSON.stringify(feed, null, 2)
+              );
+
               // Try to find LTP in various possible locations
-              const ltp = feed.ltp || 
-                (feed.price && feed.price.ltp) || 
-                (feed.ff && feed.ff.marketFF && feed.ff.marketFF.ltpc && feed.ff.marketFF.ltpc.ltp) ||
-                feed.lastTradedPrice || 
+              const ltp =
+                feed.ltp ||
+                (feed.price && feed.price.ltp) ||
+                (feed.ff &&
+                  feed.ff.marketFF &&
+                  feed.ff.marketFF.ltpc &&
+                  feed.ff.marketFF.ltpc.ltp) ||
+                feed.lastTradedPrice ||
                 feed.lastPrice;
-                
+
               if (ltp) {
                 ltpData[key] = ltp;
                 // console.log(`Found LTP for ${key}:`, ltp);
@@ -106,9 +123,9 @@ const connectWebSocket = async (wsUrl) => {
                 // console.log(`No LTP found for ${key}`);
               }
             });
-            
+
             if (Object.keys(ltpData).length > 0) {
-              io.emit('ltp', { timestamp: Date.now(), data: ltpData });
+              io.emit("ltp", { timestamp: Date.now(), data: ltpData });
             }
           }
         }
@@ -151,7 +168,7 @@ const decodeProfobuf = (buffer) => {
     return FeedResponse.toObject(decoded, {
       longs: String,
       enums: String,
-      bytes: String
+      bytes: String,
     });
   } catch (error) {
     console.error("❌ Failed to decode protobuf:", error);
@@ -160,35 +177,48 @@ const decodeProfobuf = (buffer) => {
 };
 
 // Socket.IO connection handling
-io.on('connection', (socket) => {
-  console.log('👤 Frontend client connected:', socket.id);
-  
+io.on("connection", (socket) => {
+  console.log("👤 Frontend client connected:", socket.id);
+
   // Handle client disconnect
-  socket.on('disconnect', () => {
-    console.log('👤 Frontend client disconnected:', socket.id);
+  socket.on("disconnect", () => {
+    console.log("👤 Frontend client disconnected:", socket.id);
   });
-  
+
   // Handle subscription requests from frontend
-  socket.on('subscribe', async (instruments) => {
+  socket.on("subscribe", async (instruments) => {
     if (!upstoxWs || upstoxWs.readyState !== WebSocket.OPEN) {
-      socket.emit('error', { message: 'WebSocket not connected' });
+      socket.emit("error", { message: "WebSocket not connected" });
       return;
     }
-    
+
     try {
       const data = {
         guid: "clientrequest",
         method: "sub",
         data: {
           mode: "full",
-          instrumentKeys: Array.isArray(instruments) ? instruments : ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50","BSE_INDEX|AUTO","NSE_INDEX|Nifty IT","NSE_FO|36702","NSE_EQ|INE002A01018","NSE_EQ|INE040A01034"],
+          instrumentKeys: Array.isArray(instruments)
+            ? instruments
+            : [
+              "NSE_INDEX|Nifty Bank",
+              "NSE_INDEX|Nifty 50",
+              "NSE_INDEX|Nifty IT",
+              "NSE_EQ|INE002A01018", // RELIANCE
+              "NSE_EQ|INE040A01034", // HDFC BANK
+              "NSE_EQ|INE009A01021", // INFOSYS
+              "NSE_EQ|INE030A01027", // BHARTI AIRTEL
+              "NSE_EQ|INE062A01020",
+            ],
         },
       };
-      
+
       upstoxWs.send(Buffer.from(JSON.stringify(data)));
-      socket.emit('subscribed', { instruments: data.data.instrumentKeys });
+      socket.emit("subscribed", { instruments: data.data.instrumentKeys });
     } catch (error) {
-      socket.emit('error', { message: 'Failed to send subscription: ' + error.message });
+      socket.emit("error", {
+        message: "Failed to send subscription: " + error.message,
+      });
     }
   });
 });
@@ -213,7 +243,7 @@ app.get("/start", async (req, res) => {
 app.get("/status", (req, res) => {
   res.json({
     connected: upstoxWs && upstoxWs.readyState === WebSocket.OPEN,
-    protobufInitialized: protobufRoot !== null
+    protobufInitialized: protobufRoot !== null,
   });
 });
 
@@ -222,12 +252,12 @@ app.get("/status", (req, res) => {
   try {
     // Initialize protobuf first
     await initProtobuf();
-    
+
     // Start the server
     server.listen(PORT, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
-    
+
     // Auto-connect to Upstox WebSocket on startup
     const wsUrl = await getMarketFeedUrl();
     upstoxWs = await connectWebSocket(wsUrl);
