@@ -26,7 +26,7 @@ app.use(express.json());
 // Initialize global variables
 let protobufRoot = null;
 let upstoxWs = null;
-const accessToken = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGRhMjQyNmM3MTBlYzNiNjk2OTVhY2IiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTEyNjU2NiwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5MTgzMjAwfQ.9yoqJ4SD9nB6arcB8XLQeZkQWkAYGPPrOQaRHDgpBb0"; 
+const accessToken = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGRiNjIwODBiN2NlNzBmNzFmOWQ5MWEiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTIwNzk0NCwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5MjY5NjAwfQ.6UBxbTcllqnnMrpCIaPgvhScQm9K7XD45d85mtRVGpQ"; 
 
 // Function to authorize the market data feed
 const getMarketFeedUrl = async () => {
@@ -58,8 +58,8 @@ const connectWebSocket = async (wsUrl) => {
           method: "sub",
           data: {
             mode: "full",
-            // instrumentKeys: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50","BSE_INDEX|AUTO","NSE_INDEX|Nifty IT","NSE_FO|36702"],
-            instrumentKeys: ["NSE_FO|60907"],
+            instrumentKeys: ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50","BSE_INDEX|AUTO","NSE_INDEX|Nifty IT","NSE_FO|36702","NSE_EQ|INE002A01018","NSE_INDEX|Nifty Midcap 100","NSE_EQ|INE040A01034"],
+            // instrumentKeys: ["NSE_FO|60907"],
           },
         };
         ws.send(Buffer.from(JSON.stringify(data)));
@@ -78,6 +78,9 @@ const connectWebSocket = async (wsUrl) => {
         const decoded = decodeProfobuf(data);
         
         if (decoded) {
+          // Log the decoded data structure for debugging
+          // console.log("Decoded data structure:", JSON.stringify(decoded, null, 2));
+          
           // Send the decoded data to all connected Socket.IO clients
           io.emit('marketData', decoded);
           
@@ -87,15 +90,20 @@ const connectWebSocket = async (wsUrl) => {
             
             Object.keys(decoded.feeds).forEach(key => {
               const feed = decoded.feeds[key];
+              console.log(`Processing feed for ${key}:`, JSON.stringify(feed, null, 2));
               
               // Try to find LTP in various possible locations
               const ltp = feed.ltp || 
                 (feed.price && feed.price.ltp) || 
+                (feed.ff && feed.ff.marketFF && feed.ff.marketFF.ltpc && feed.ff.marketFF.ltpc.ltp) ||
                 feed.lastTradedPrice || 
                 feed.lastPrice;
                 
               if (ltp) {
                 ltpData[key] = ltp;
+                // console.log(`Found LTP for ${key}:`, ltp);
+              } else {
+                // console.log(`No LTP found for ${key}`);
               }
             });
             
@@ -173,7 +181,7 @@ io.on('connection', (socket) => {
         method: "sub",
         data: {
           mode: "full",
-          instrumentKeys: Array.isArray(instruments) ? instruments : ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50"],
+          instrumentKeys: Array.isArray(instruments) ? instruments : ["NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50","BSE_INDEX|AUTO","NSE_INDEX|Nifty IT","NSE_FO|36702","NSE_EQ|INE002A01018","NSE_EQ|INE040A01034"],
         },
       };
       
