@@ -6,6 +6,9 @@ const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
 const winston = require('winston');
 
+// This script fetches active stock instruments from the database
+// and calculates their 52-week high and low values
+
 // Initialize Express app
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -38,15 +41,36 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const UPSTOX_API_URL = 'https://api.upstox.com/v3/historical-candle/';
 const accessToken = process.env.UPSTOX_ACCESS_TOKEN;
 
-// List of stock instruments to track
-const INSTRUMENTS = [
-  'NSE_EQ|INE002A01018', // RELIANCE
-  'NSE_EQ|INE040A01034', // HDFC BANK
-  'NSE_EQ|INE009A01021', // INFOSYS
-  'NSE_EQ|INE030A01027', // BHARTI AIRTEL
-  'NSE_EQ|INE062A01020'  // AXIS BANK
-  // Add more instruments as needed
-];
+// Function to fetch active instruments from the stock_instruments table
+async function fetchActiveInstruments() {
+  try {
+    logger.info('Fetching active instruments from stock_instruments table');
+    
+    const { data, error } = await supabase
+      .from('stock_instruments')
+      .select('instrument_key')
+      .eq('is_active', true);
+      
+    if (error) {
+      logger.error(`Error fetching active instruments: ${error.message}`);
+      throw error;
+    }
+    
+    if (!data || data.length === 0) {
+      logger.warn('No active instruments found in the database');
+      return [];
+    }
+    
+    // Extract instrument keys from the result
+    const instruments = data.map(item => item.instrument_key);
+    logger.info(`Found ${instruments.length} active instruments`);
+    
+    return instruments;
+  } catch (error) {
+    logger.error('Failed to fetch active instruments:', error.message);
+    throw error;
+  }
+}
 
 // Function to fetch historical data from Upstox
 async function fetchHistoricalData(instrumentKey) {
@@ -122,20 +146,132 @@ function calculate52WeekHighLow(data) {
   }
 }
 
+// Simple function to check if we can access a table
+async function canAccessTable(tableName) {
+  try {
+    // Try to select a single row with limit 1 to check if the table is accessible
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('*')
+      .limit(1);
+    
+    // If there's no error, the table exists and is accessible
+    return !error;
+  } catch (error) {
+    logger.warn(`Cannot access table ${tableName}: ${error.message}`);
+    return false;
+  }
+}
+
+// Function to fetch stock information from the stock_instruments table
+async function fetchStockInformation(instrumentKey) {
+  try {
+    logger.info(`Fetching stock information for ${instrumentKey}`);
+    
+    // Extract the instrument parts (e.g., NSE_EQ|INE002A01018 -> NSE_EQ, INE002A01018)
+    const parts = instrumentKey.split('|');
+    const exchange = parts[0] || null;
+    const symbol = parts.length > 1 ? parts[1] : null;
+    
+    // Default values based on the instrument key
+    const defaultInfo = {
+      name: null,
+      symbol: symbol,
+      exchange: exchange,
+      sector: null
+    };
+    
+    // Check if we can access the stock_instruments table
+    const canAccess = await canAccessTable('stock_instruments');
+    
+    if (!canAccess) {
+      logger.warn(`Cannot access stock_instruments table. Using default information for ${instrumentKey}`);
+      return defaultInfo;
+    }
+    
+    // Try to query the table with the correct columns
+    try {
+      const { data, error } = await supabase
+        .from('stock_instruments')
+        .select('company_name, symbol, exchange, sector')
+        .eq('instrument_key', instrumentKey)
+        .single();
+        
+      if (error) {
+        logger.warn(`No stock information found for ${instrumentKey}: ${error.message}`);
+        return defaultInfo;
+      }
+      
+      logger.info(`Found stock information for ${instrumentKey}: ${JSON.stringify(data)}`);
+      
+      // Use data if available, otherwise use defaults
+      return {
+        name: data.company_name || defaultInfo.name,
+        symbol: data.symbol || defaultInfo.symbol,
+        exchange: data.exchange || defaultInfo.exchange,
+        sector: data.sector || defaultInfo.sector
+      };
+    } catch (error) {
+      logger.warn(`Error querying stock_instruments table: ${error.message}. Using default information.`);
+      return defaultInfo;
+    }
+  } catch (error) {
+    logger.error(`Error fetching stock information for ${instrumentKey}:`, error.message);
+    return {
+      name: null,
+      symbol: null,
+      exchange: null,
+      sector: null
+    };
+  }
+}
+
 // Function to save data to Supabase
-async function saveToSupabase(instrumentKey, high, low) {
+async function saveToSupabase(instrumentKey, high, low, stockInfo) {
   try {
     logger.info(`Saving data for ${instrumentKey}: high=${high}, low=${low}`);
     
+    // Create a data object with required fields
+    const dataToSave = {
+      instrument_key: instrumentKey,
+      high: high,
+      low: low,
+      updated_at: new Date().toISOString(),
+      is_active: true
+    };
+    
+    // Add optional fields if they exist
+    if (stockInfo) {
+      if (stockInfo.name !== undefined && stockInfo.name !== null) {
+        dataToSave.name = stockInfo.name;
+      }
+      
+      if (stockInfo.symbol !== undefined && stockInfo.symbol !== null) {
+        dataToSave.symbol = stockInfo.symbol;
+      }
+      
+      if (stockInfo.exchange !== undefined && stockInfo.exchange !== null) {
+        dataToSave.exchange = stockInfo.exchange;
+      }
+      
+      if (stockInfo.sector !== undefined && stockInfo.sector !== null) {
+        dataToSave.sector = stockInfo.sector;
+      }
+    }
+    
+    // Check if we can access the stock_highlow table
+    const canAccess = await canAccessTable('stock_highlow');
+    
+    if (!canAccess) {
+      logger.error(`Cannot access stock_highlow table. Cannot save data for ${instrumentKey}`);
+      throw new Error('Cannot access stock_highlow table');
+    }
+    
+    // Perform the upsert operation
     const { data, error } = await supabase
       .from('stock_highlow')
       .upsert(
-        {
-          instrument_key: instrumentKey,
-          high: high,
-          low: low,
-          updated_at: new Date().toISOString()
-        },
+        dataToSave,
         { 
           onConflict: 'instrument_key',
           ignoreDuplicates: false
@@ -143,14 +279,69 @@ async function saveToSupabase(instrumentKey, high, low) {
       );
       
     if (error) {
+      logger.error(`Error in Supabase upsert for ${instrumentKey}: ${error.message}`);
       throw error;
     }
     
     logger.info(`Successfully saved data for ${instrumentKey}`);
     return data;
   } catch (error) {
-    logger.error(`Error saving data to Supabase for ${instrumentKey}:`, error.message);
+    logger.error(`Error saving data to Supabase for ${instrumentKey}: ${error.message}`);
     throw error;
+  }
+}
+
+// Function to ensure instrument exists in stock_instruments table
+async function ensureInstrumentExists(instrumentKey, stockInfo) {
+  try {
+    // Extract parts from instrument key
+    const parts = instrumentKey.split('|');
+    const exchange = parts[0] || '';
+    const symbol = parts.length > 1 ? parts[1] : '';
+    
+    // Check if we can access the stock_instruments table
+    const canAccess = await canAccessTable('stock_instruments');
+    
+    if (!canAccess) {
+      logger.warn(`Cannot access stock_instruments table. Cannot ensure instrument exists: ${instrumentKey}`);
+      return false;
+    }
+    
+    // Check if the instrument already exists
+    const { data, error } = await supabase
+      .from('stock_instruments')
+      .select('id')
+      .eq('instrument_key', instrumentKey)
+      .maybeSingle();
+    
+    if (data) {
+      // Instrument exists
+      logger.info(`Instrument ${instrumentKey} already exists in stock_instruments table`);
+      return true;
+    }
+    
+    // Instrument doesn't exist, create it
+    const { error: insertError } = await supabase
+      .from('stock_instruments')
+      .insert({
+        instrument_key: instrumentKey,
+        company_name: stockInfo?.name || 'Unknown',
+        symbol: stockInfo?.symbol || symbol,
+        exchange: stockInfo?.exchange || exchange,
+        sector: stockInfo?.sector || null,
+        is_active: true
+      });
+    
+    if (insertError) {
+      logger.error(`Failed to insert instrument ${instrumentKey} into stock_instruments table: ${insertError.message}`);
+      return false;
+    }
+    
+    logger.info(`Successfully created instrument ${instrumentKey} in stock_instruments table`);
+    return true;
+  } catch (error) {
+    logger.error(`Error ensuring instrument exists for ${instrumentKey}: ${error.message}`);
+    return false;
   }
 }
 
@@ -163,10 +354,28 @@ async function processInstrument(instrumentKey) {
     // Calculate 52-week high and low
     const { high, low } = calculate52WeekHighLow(historicalData);
     
-    // Save to Supabase
-    await saveToSupabase(instrumentKey, high, low);
+    // Fetch additional stock information
+    const stockInfo = await fetchStockInformation(instrumentKey);
     
-    return { instrumentKey, high, low };
+    // Ensure the instrument exists in stock_instruments table
+    const instrumentExists = await ensureInstrumentExists(instrumentKey, stockInfo);
+    
+    if (!instrumentExists) {
+      throw new Error(`Could not ensure instrument ${instrumentKey} exists in stock_instruments table`);
+    }
+    
+    // Save to Supabase with the additional information
+    await saveToSupabase(instrumentKey, high, low, stockInfo);
+    
+    return { 
+      instrumentKey, 
+      high, 
+      low,
+      name: stockInfo?.name,
+      symbol: stockInfo?.symbol,
+      exchange: stockInfo?.exchange,
+      sector: stockInfo?.sector
+    };
   } catch (error) {
     logger.error(`Failed to process instrument ${instrumentKey}:`, error.message);
     return { instrumentKey, error: error.message };
@@ -182,18 +391,36 @@ async function runHighLowJob() {
     failed: []
   };
   
-  // Process each instrument sequentially to avoid rate limits
-  for (const instrument of INSTRUMENTS) {
-    try {
-      const result = await processInstrument(instrument);
-      if (result.error) {
-        results.failed.push(result);
-      } else {
-        results.successful.push(result);
-      }
-    } catch (error) {
-      results.failed.push({ instrumentKey: instrument, error: error.message });
+  try {
+    // Fetch active instruments from the database
+    const instruments = await fetchActiveInstruments();
+    
+    if (instruments.length === 0) {
+      logger.warn('No instruments to process. Job completed.');
+      return results;
     }
+    
+    logger.info(`Processing ${instruments.length} instruments`);
+    
+    // Process each instrument sequentially to avoid rate limits
+    for (const instrument of instruments) {
+      try {
+        const result = await processInstrument(instrument);
+        if (result.error) {
+          results.failed.push(result);
+        } else {
+          results.successful.push(result);
+        }
+      } catch (error) {
+        results.failed.push({ instrumentKey: instrument, error: error.message });
+      }
+    }
+  } catch (error) {
+    logger.error(`Error fetching instruments: ${error.message}`);
+    return {
+      successful: [],
+      failed: [{ instrumentKey: 'FETCH_INSTRUMENTS', error: error.message }]
+    };
   }
   
   logger.info(`Job completed. Successfully processed: ${results.successful.length}, Failed: ${results.failed.length}`);

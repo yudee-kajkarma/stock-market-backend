@@ -52,7 +52,6 @@ const connectWebSocket = async (wsUrl) => {
       console.log("✅ Connected to Upstox WebSocket");
       resolve(ws); // Resolve the promise once connected
 
-      // Set a timeout to send a subscription message after 1 second
       setTimeout(() => {
         const data = {
           guid: "someguid",
@@ -89,7 +88,7 @@ const connectWebSocket = async (wsUrl) => {
 
         if (decoded) {
           // Log the decoded data structure for debugging
-          // console.log("Decoded data structure:", JSON.stringify(decoded, null, 2));
+          console.log("Decoded data structure:", JSON.stringify(decoded, null, 2));
 
           // Send the decoded data to all connected Socket.IO clients
           io.emit("marketData", decoded);
@@ -100,10 +99,10 @@ const connectWebSocket = async (wsUrl) => {
 
             Object.keys(decoded.feeds).forEach((key) => {
               const feed = decoded.feeds[key];
-              console.log(
-                `Processing feed for ${key}:`,
-                JSON.stringify(feed, null, 2)
-              );
+              // console.log(
+              //   `Processing feed for ${key}:`,
+              //   JSON.stringify(feed, null, 2)
+              // );
 
               // Try to find LTP in various possible locations
               const ltp =
@@ -130,12 +129,12 @@ const connectWebSocket = async (wsUrl) => {
           }
         }
       } catch (error) {
-        console.error("❌ Error processing message:", error);
+        // console.error("❌ Error processing message:", error);
       }
     });
 
     ws.on("error", (error) => {
-      console.log("❌ Upstox WebSocket error:", error);
+      // console.log("❌ Upstox WebSocket error:", error);
       reject(error); // Reject the promise on error
     });
   });
@@ -171,7 +170,7 @@ const decodeProfobuf = (buffer) => {
       bytes: String,
     });
   } catch (error) {
-    console.error("❌ Failed to decode protobuf:", error);
+    // console.error("❌ Failed to decode protobuf:", error);
     return null;
   }
 };
@@ -208,7 +207,6 @@ io.on("connection", (socket) => {
               "NSE_EQ|INE040A01034", // HDFC BANK
               "NSE_EQ|INE009A01021", // INFOSYS
               "NSE_EQ|INE030A01027", // BHARTI AIRTEL
-              "NSE_EQ|INE062A01020",
             ],
         },
       };
@@ -227,7 +225,7 @@ io.on("connection", (socket) => {
 app.get("/start", async (req, res) => {
   try {
     if (!upstoxWs || upstoxWs.readyState !== WebSocket.OPEN) {
-      console.log("🚀 Starting WebSocket connection...");
+      // console.log("🚀 Starting WebSocket connection...");
       const wsUrl = await getMarketFeedUrl();
       upstoxWs = await connectWebSocket(wsUrl);
       res.json({ success: true, message: "WebSocket connection started" });
@@ -235,7 +233,7 @@ app.get("/start", async (req, res) => {
       res.json({ success: true, message: "WebSocket already connected" });
     }
   } catch (error) {
-    console.error("❌ Failed to start WebSocket:", error);
+    // console.error("❌ Failed to start WebSocket:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -255,13 +253,13 @@ app.get("/status", (req, res) => {
 
     // Start the server
     server.listen(PORT, () => {
-      console.log(`🚀 Server running on http://localhost:${PORT}`);
+      // console.log(`🚀 Server running on http://localhost:${PORT}`);
     });
 
     // Auto-connect to Upstox WebSocket on startup
     const wsUrl = await getMarketFeedUrl();
     upstoxWs = await connectWebSocket(wsUrl);
   } catch (error) {
-    console.error("❌ Startup error:", error);
+    // console.error("❌ Startup error:", error);
   }
 })();
