@@ -430,15 +430,15 @@ async function runHighLowJob() {
 // PRODUCTION SCHEDULE (COMMENTED OUT FOR TESTING)
 // Set up scheduled job - 3:35 PM IST every weekday (Monday to Friday)
 // IST is UTC+5:30, so 3:35 PM IST is 10:05 AM UTC
-// cron.schedule('5 10 * * 1-5', async () => {
-//   try {
-//     logger.info('Running scheduled 52-week high/low job at 3:35 PM IST');
-//     await runHighLowJob();
-//     logger.info('Scheduled job completed');
-//   } catch (error) {
-//     logger.error('Error in scheduled job:', error);
-//   }
-// });
+cron.schedule('5 10 * * 1-5', async () => {
+  try {
+    logger.info('Running scheduled 52-week high/low job at 3:35 PM IST');
+    await runHighLowJob();
+    logger.info('Scheduled job completed');
+  } catch (error) {
+    logger.error('Error in scheduled job:', error);
+  }
+});
 
 // TESTING SCHEDULE - Runs every minute
 cron.schedule('* * * * *', async () => {
