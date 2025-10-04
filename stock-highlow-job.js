@@ -85,7 +85,6 @@ async function fetchHistoricalData(instrumentKey) {
       return date.toISOString().split('T')[0];
     };
 
-    // Format URL with path parameters
     // Format: /v3/historical-candle/:instrument_key/:unit/:interval/:to_date/:from_date
     const unit = 'days';
     const interval = '1';
@@ -430,26 +429,37 @@ async function runHighLowJob() {
 // PRODUCTION SCHEDULE (COMMENTED OUT FOR TESTING)
 // Set up scheduled job - 3:35 PM IST every weekday (Monday to Friday)
 // IST is UTC+5:30, so 3:35 PM IST is 10:05 AM UTC
-cron.schedule('5 10 * * 1-5', async () => {
+// Cron format: minute hour day month day-of-week
+// For 3:35 PM IST = 15:35 IST = 10:05 UTC = minute=5, hour=10
+const productionSchedule = cron.schedule('5 10 * * 1-5', async () => {
   try {
-    logger.info('Running scheduled 52-week high/low job at 3:35 PM IST');
+    const now = new Date();
+    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert to IST
+    logger.info(`Running scheduled 52-week high/low job at ${istTime.toISOString()} IST (${now.toISOString()} UTC)`);
     await runHighLowJob();
     logger.info('Scheduled job completed');
   } catch (error) {
     logger.error('Error in scheduled job:', error);
   }
+}, {
+  scheduled: false, // Start as disabled for testing
+  timezone: "UTC"
 });
 
-// TESTING SCHEDULE - Runs every minute
-cron.schedule('* * * * *', async () => {
+// TESTING SCHEDULE - Runs every minute (CURRENTLY ACTIVE)
+const testingSchedule = cron.schedule('* * * * *', async () => {
   try {
     const now = new Date();
-    logger.info(`[TEST MODE] Running scheduled 52-week high/low job at ${now.toISOString()}`);
+    const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)); // Convert to IST
+    logger.info(`[TEST MODE] Running scheduled 52-week high/low job at ${istTime.toISOString()} IST (${now.toISOString()} UTC)`);
     await runHighLowJob();
     logger.info('[TEST MODE] Scheduled job completed');
   } catch (error) {
     logger.error('[TEST MODE] Error in scheduled job:', error);
   }
+}, {
+  scheduled: true, // Currently active for testing
+  timezone: "UTC"
 });
 
 // API endpoint to manually trigger the job
@@ -471,6 +481,72 @@ app.get('/run-highlow-job', async (req, res) => {
   }
 });
 
+// API endpoint to switch to production schedule
+app.post('/enable-production-schedule', (req, res) => {
+  try {
+    testingSchedule.stop();
+    productionSchedule.start();
+    logger.info('Switched to production schedule (3:35 PM IST weekdays)');
+    res.json({ 
+      status: 'success',
+      message: 'Production schedule enabled. Job will run at 3:35 PM IST on weekdays.',
+      schedule: '3:35 PM IST (Monday-Friday)'
+    });
+  } catch (error) {
+    logger.error('Error enabling production schedule:', error);
+    res.status(500).json({ 
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+// API endpoint to switch to testing schedule
+app.post('/enable-testing-schedule', (req, res) => {
+  try {
+    productionSchedule.stop();
+    testingSchedule.start();
+    logger.info('Switched to testing schedule (every minute)');
+    res.json({ 
+      status: 'success',
+      message: 'Testing schedule enabled. Job will run every minute.',
+      schedule: 'Every minute'
+    });
+  } catch (error) {
+    logger.error('Error enabling testing schedule:', error);
+    res.status(500).json({ 
+      status: 'error',
+      message: error.message
+    });
+  }
+});
+
+// API endpoint to get current schedule status
+app.get('/schedule-status', (req, res) => {
+  const now = new Date();
+  const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+  
+  res.json({
+    status: 'success',
+    currentTime: {
+      utc: now.toISOString(),
+      ist: istTime.toISOString()
+    },
+    schedules: {
+      production: {
+        active: productionSchedule.getStatus() === 'scheduled',
+        schedule: '5 10 * * 1-5 (3:35 PM IST weekdays)',
+        description: 'Runs at 3:35 PM IST on weekdays'
+      },
+      testing: {
+        active: testingSchedule.getStatus() === 'scheduled',
+        schedule: '* * * * * (every minute)',
+        description: 'Runs every minute for testing'
+      }
+    }
+  });
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -478,7 +554,17 @@ app.get('/health', (req, res) => {
 
 // Start the server
 app.listen(PORT, () => {
+  const now = new Date();
+  const istTime = new Date(now.getTime() + (5.5 * 60 * 60 * 1000));
+  
   logger.info(`Server is running on port ${PORT}`);
-  logger.info(`[TEST MODE] 52-week high/low job scheduled to run EVERY MINUTE for testing`);
-  logger.info(`[TEST MODE] Production schedule (3:35 PM IST) is commented out`);
+  logger.info(`Current time: ${now.toISOString()} UTC | ${istTime.toISOString()} IST`);
+  logger.info(`[TEST MODE] Testing schedule is ACTIVE - job runs every minute`);
+  logger.info(`[PRODUCTION] Production schedule is DISABLED - would run at 3:35 PM IST weekdays`);
+  logger.info(`Available endpoints:`);
+  logger.info(`  GET  /health - Health check`);
+  logger.info(`  GET  /run-highlow-job - Manual job trigger`);
+  logger.info(`  GET  /schedule-status - Check current schedule status`);
+  logger.info(`  POST /enable-production-schedule - Switch to production schedule`);
+  logger.info(`  POST /enable-testing-schedule - Switch to testing schedule`);
 });
