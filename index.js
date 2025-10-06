@@ -26,8 +26,8 @@ app.use(cors());
 app.use(express.json());
 
 // Configure Supabase client
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseUrl = process.env.SUPABASE_URL || "https://juisueefqgtvzezrzudv.supabase.co";
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp1aXN1ZWVmcWd0dnplenJ6dWR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkyMDUzNTcsImV4cCI6MjA3NDc4MTM1N30.zFzHnvlX5cyk7TfbOUZ1zB_depLTNWEzXmhDbcVlXYI";
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('Supabase credentials are missing. Please check your environment variables.');
