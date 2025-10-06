@@ -1,4 +1,5 @@
 // Import required modules
+require('dotenv').config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -6,6 +7,7 @@ const WebSocket = require("ws").WebSocket;
 const protobuf = require("protobufjs");
 const axios = require("axios");
 const cors = require("cors");
+const { createClient } = require('@supabase/supabase-js');
 
 // Setup Express and Socket.io
 const app = express();
@@ -23,21 +25,129 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// Configure Supabase client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error('Supabase credentials are missing. Please check your environment variables.');
+  process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
 // Initialize global variables
 let protobufRoot = null;
 let upstoxWs = null;
-const accessToken =
-  "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0R0NBWkgiLCJqdGkiOiI2OGUwYjMwMGFlYWZjZDRiNWMxODIwZmUiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc1OTU1NjM1MiwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzU5NjE1MjAwfQ.dFmU3t-QR9tLExgwnkt14UaeHsnseYq1X3bs-xTIiHE";
+let cachedAccessToken = null;
+let tokenCacheTime = null;
+const TOKEN_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+
+// Function to fetch access token from Supabase
+const getAccessTokenFromDB = async () => {
+  try {
+    // Check if we have a cached token that's still valid
+    if (cachedAccessToken && tokenCacheTime && (Date.now() - tokenCacheTime) < TOKEN_CACHE_DURATION) {
+      console.log('🔄 Using cached access token');
+      return cachedAccessToken;
+    }
+
+    console.log('🔍 Fetching access token from database...');
+    
+    const { data, error } = await supabase
+      .from('access_tokens')
+      .select('token, expires_at')
+      .eq('provider', 'upstox')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error) {
+      console.error('❌ Error fetching access token from database:', error);
+      throw new Error(`Database error: ${error.message}`);
+    }
+
+    if (!data) {
+      throw new Error('No active access token found in database');
+    }
+
+    // Check if token is expired
+    if (data.expires_at && new Date(data.expires_at) < new Date()) {
+      throw new Error('Access token has expired');
+    }
+
+    // Cache the token
+    cachedAccessToken = data.token;
+    tokenCacheTime = Date.now();
+    
+    console.log('✅ Successfully fetched access token from database');
+    return data.token;
+  } catch (error) {
+    console.error('❌ Failed to get access token:', error.message);
+    throw error;
+  }
+};
+
+// Function to save access token to database
+const saveAccessTokenToDB = async (token, expiresAt = null, provider = 'upstox') => {
+  try {
+    console.log('💾 Saving access token to database...');
+    
+    // First, deactivate all existing tokens for this provider
+    await supabase
+      .from('access_tokens')
+      .update({ is_active: false })
+      .eq('provider', provider);
+
+    // Insert the new token
+    const { data, error } = await supabase
+      .from('access_tokens')
+      .insert({
+        provider: provider,
+        token: token,
+        expires_at: expiresAt,
+        is_active: true
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('❌ Error saving access token to database:', error);
+      throw new Error(`Database error: ${error.message}`);
+    }
+
+    // Clear cache to force refresh
+    cachedAccessToken = null;
+    tokenCacheTime = null;
+    
+    console.log('✅ Successfully saved access token to database');
+    return data;
+  } catch (error) {
+    console.error('❌ Failed to save access token:', error.message);
+    throw error;
+  }
+};
 
 // Function to authorize the market data feed
 const getMarketFeedUrl = async () => {
-  const url = "https://api.upstox.com/v3/feed/market-data-feed/authorize";
-  const headers = {
-    Accept: "application/json",
-    Authorization: `Bearer ${accessToken}`,
-  };
-  const response = await axios.get(url, { headers });
-  return response.data.data.authorizedRedirectUri;
+  try {
+    const accessToken = await getAccessTokenFromDB();
+    const url = "https://api.upstox.com/v3/feed/market-data-feed/authorize";
+    const headers = {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    };
+    
+    console.log('🔐 Authorizing market data feed with database token...');
+    const response = await axios.get(url, { headers });
+    console.log('✅ Successfully authorized market data feed');
+    
+    return response.data.data.authorizedRedirectUri;
+  } catch (error) {
+    console.error('❌ Failed to authorize market data feed:', error.message);
+    throw error;
+  }
 };
 
 // Function to establish WebSocket connection
@@ -243,6 +353,98 @@ app.get("/status", (req, res) => {
     connected: upstoxWs && upstoxWs.readyState === WebSocket.OPEN,
     protobufInitialized: protobufRoot !== null,
   });
+});
+
+// API endpoint to get current access token info
+app.get("/api/token/info", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('access_tokens')
+      .select('id, provider, expires_at, is_active, created_at, updated_at')
+      .eq('provider', 'upstox')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'No active access token found',
+        details: error.message 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      data: {
+        ...data,
+        isExpired: data.expires_at ? new Date(data.expires_at) < new Date() : false
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch token info',
+      details: error.message 
+    });
+  }
+});
+
+// API endpoint to update access token
+app.post("/api/token/update", async (req, res) => {
+  try {
+    const { token, expires_at, provider = 'upstox' } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Token is required' 
+      });
+    }
+
+    const result = await saveAccessTokenToDB(token, expires_at, provider);
+    
+    res.json({ 
+      success: true, 
+      message: 'Access token updated successfully',
+      data: result
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update access token',
+      details: error.message 
+    });
+  }
+});
+
+// API endpoint to test current access token
+app.get("/api/token/test", async (req, res) => {
+  try {
+    const accessToken = await getAccessTokenFromDB();
+    
+    // Test the token by making a simple API call
+    const testUrl = "https://api.upstox.com/v2/user/profile";
+    const headers = {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    };
+    
+    const response = await axios.get(testUrl, { headers });
+    
+    res.json({ 
+      success: true, 
+      message: 'Access token is valid',
+      profile: response.data
+    });
+  } catch (error) {
+    res.status(400).json({ 
+      success: false, 
+      error: 'Access token test failed',
+      details: error.message 
+    });
+  }
 });
 
 // Start server and initialize
