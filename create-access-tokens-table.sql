@@ -1,4 +1,4 @@
--- Create access_tokens table for storing API access tokens
+-- Create access_tokens table for storing API access tokens (single row per provider)
 -- Run this SQL in your Supabase SQL Editor
 
 CREATE TABLE access_tokens (
@@ -8,11 +8,14 @@ CREATE TABLE access_tokens (
   expires_at TIMESTAMP WITH TIME ZONE,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  
+  -- Ensure only one row per provider
+  CONSTRAINT unique_provider UNIQUE (provider)
 );
 
--- Create an index on provider and is_active for faster queries
-CREATE INDEX idx_access_tokens_provider_active ON access_tokens(provider, is_active);
+-- Create an index on provider for faster queries
+CREATE INDEX idx_access_tokens_provider ON access_tokens(provider);
 
 -- Insert a sample token (replace with your actual token)
 INSERT INTO access_tokens (provider, token, expires_at, is_active) 

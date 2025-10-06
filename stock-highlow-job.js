@@ -39,7 +39,48 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Upstox API configuration
 const UPSTOX_API_URL = 'https://api.upstox.com/v3/historical-candle/';
-const accessToken = process.env.UPSTOX_ACCESS_TOKEN;
+
+// Function to fetch access token from database (single row approach)
+const getAccessTokenFromDB = async () => {
+  try {
+    logger.info('Fetching access token from database...');
+    
+    // Get the single token row for upstox provider
+    const { data, error } = await supabase
+      .from('access_tokens')
+      .select('token, expires_at')
+      .eq('provider', 'upstox')
+      .eq('is_active', true)
+      .limit(1)
+      .single();
+
+    if (error) {
+      logger.error('Error fetching access token from database:', error);
+      throw new Error(`Database error: ${error.message}`);
+    }
+
+    if (!data) {
+      throw new Error('No active access token found in database');
+    }
+
+    // Check if token is expired
+    if (data.expires_at && new Date(data.expires_at) < new Date()) {
+      throw new Error('Access token has expired');
+    }
+
+    logger.info('Successfully fetched access token from database');
+    return data.token;
+  } catch (error) {
+    logger.error('Failed to get access token:', error.message);
+    // Fallback to environment variable if database fails
+    const fallbackToken = process.env.UPSTOX_ACCESS_TOKEN;
+    if (fallbackToken) {
+      logger.warn('Using fallback access token from environment variable');
+      return fallbackToken;
+    }
+    throw error;
+  }
+};
 
 // Function to fetch active instruments from the stock_instruments table
 async function fetchActiveInstruments() {
@@ -75,6 +116,8 @@ async function fetchActiveInstruments() {
 // Function to fetch historical data from Upstox
 async function fetchHistoricalData(instrumentKey) {
   try {
+    const accessToken = await getAccessTokenFromDB();
+    
     // Calculate date range for 52 weeks (365 days)
     const endDate = new Date();
     const startDate = new Date();

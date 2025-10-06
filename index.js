@@ -43,7 +43,7 @@ let cachedAccessToken = null;
 let tokenCacheTime = null;
 const TOKEN_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
 
-// Function to fetch access token from Supabase
+// Function to fetch access token from Supabase (single row approach)
 const getAccessTokenFromDB = async () => {
   try {
     // Check if we have a cached token that's still valid
@@ -54,12 +54,12 @@ const getAccessTokenFromDB = async () => {
 
     console.log('🔍 Fetching access token from database...');
     
+    // Get the single token row for upstox provider
     const { data, error } = await supabase
       .from('access_tokens')
       .select('token, expires_at')
       .eq('provider', 'upstox')
       .eq('is_active', true)
-      .order('created_at', { ascending: false })
       .limit(1)
       .single();
 
@@ -89,32 +89,62 @@ const getAccessTokenFromDB = async () => {
   }
 };
 
-// Function to save access token to database
+// Function to save access token to database (single row approach)
 const saveAccessTokenToDB = async (token, expiresAt = null, provider = 'upstox') => {
   try {
     console.log('💾 Saving access token to database...');
     
-    // First, deactivate all existing tokens for this provider
-    await supabase
+    // Check if a row already exists for this provider
+    const { data: existingToken, error: selectError } = await supabase
       .from('access_tokens')
-      .update({ is_active: false })
-      .eq('provider', provider);
-
-    // Insert the new token
-    const { data, error } = await supabase
-      .from('access_tokens')
-      .insert({
-        provider: provider,
-        token: token,
-        expires_at: expiresAt,
-        is_active: true
-      })
-      .select()
+      .select('id')
+      .eq('provider', provider)
+      .limit(1)
       .single();
 
-    if (error) {
-      console.error('❌ Error saving access token to database:', error);
-      throw new Error(`Database error: ${error.message}`);
+    let result;
+    
+    if (existingToken && !selectError) {
+      // Update the existing row
+      console.log('🔄 Updating existing access token...');
+      const { data, error } = await supabase
+        .from('access_tokens')
+        .update({
+          token: token,
+          expires_at: expiresAt,
+          is_active: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existingToken.id)
+        .select()
+        .single();
+      
+      if (error) {
+        console.error('❌ Error updating access token:', error);
+        throw new Error(`Database error: ${error.message}`);
+      }
+      
+      result = data;
+    } else {
+      // Insert the first token
+      console.log('➕ Inserting first access token...');
+      const { data, error } = await supabase
+        .from('access_tokens')
+        .insert({
+          provider: provider,
+          token: token,
+          expires_at: expiresAt,
+          is_active: true
+        })
+        .select()
+        .single();
+
+      if (error) {
+        console.error('❌ Error inserting access token:', error);
+        throw new Error(`Database error: ${error.message}`);
+      }
+      
+      result = data;
     }
 
     // Clear cache to force refresh
@@ -122,7 +152,7 @@ const saveAccessTokenToDB = async (token, expiresAt = null, provider = 'upstox')
     tokenCacheTime = null;
     
     console.log('✅ Successfully saved access token to database');
-    return data;
+    return result;
   } catch (error) {
     console.error('❌ Failed to save access token:', error.message);
     throw error;
