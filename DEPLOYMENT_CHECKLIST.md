@@ -1,4 +1,4 @@
-# Deployment Checklist
+<!-- # Deployment Checklist
 
 ## Pre-Deployment Requirements
 
@@ -67,4 +67,4 @@ Ensure these environment variables are set in your deployment platform:
 - Check application logs regularly
 - Monitor WebSocket connection status
 - Set up alerts for token expiration
-- Track API response times and error rates
+- Track API response times and error rates -->
