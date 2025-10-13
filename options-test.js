@@ -92,7 +92,7 @@ const getAccessTokenFromDB = async () => {
 const getTestInstruments = async () => {
   try {
     const accessToken = await getAccessTokenFromDB();
-    const url = "https://api.upstox.com/v3/instrument/search?query=NIFTY";
+    const url = "https://api.upstox.com/v3/instrument/search";
     const headers = {
       Accept: "application/json",
       Authorization: `Bearer ${accessToken}`,
@@ -118,10 +118,7 @@ const getTestInstruments = async () => {
     console.error('❌ [OPTIONS TEST] Failed to fetch instruments:', error.message);
     // Return fallback instruments
     return [
-      "NSE_FO|45450", // Nifty Call Option
-      "NSE_FO|45451", // Nifty Put Option
-      "NSE_FO|50904", // Bank Nifty Call Option
-      "NSE_FO|50923"  // Bank Nifty Put Option
+        "NSE_FO|59313"
     ];
   }
 };
@@ -211,10 +208,10 @@ const connectOptionsWebSocket = async (wsUrl) => {
           guid: "ltpc_test_" + Date.now(),
           method: "sub",
           data: {
-            mode: "ltpc",
+            mode: "full",
             instrumentKeys: [
-              "NSE_INDEX|Nifty 50", // Known working instrument
-              "NSE_INDEX|Nifty Bank" // Another known working instrument
+              // "NSE_INDEX|Nifty 50", // Known working instrument
+              // "NSE_INDEX|Nifty Bank" // Another known working instrument
             ],
           },
         };
@@ -228,13 +225,13 @@ const connectOptionsWebSocket = async (wsUrl) => {
             guid: "options_greeks_" + Date.now(),
             method: "sub",
             data: {
-              mode: "option_greeks",
+              mode: "full",
               instrumentKeys: [
-                "NSE_FO|45450", // Nifty options
-                "NSE_FO|45451", // Nifty options
-                "NSE_FO|50904", // Bank Nifty options
+                // "NSE_FO|45450", // Nifty options
+                // "NSE_FO|45451", // Nifty options
+                // "NSE_FO|50904", // Bank Nifty options
                 "NSE_FO|50923", // Bank Nifty options
-                "NSE_FO|60907"  // Another option
+                // "NSE_FO|60907"  // Another option
               ],
             },
           };
