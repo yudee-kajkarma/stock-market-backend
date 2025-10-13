@@ -19,7 +19,7 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
 // Enable CORS for REST API
 app.use(cors());
@@ -39,6 +39,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // Initialize global variables
 let protobufRoot = null;
 let upstoxWs = null;
+let optionsWs = null; // Separate WebSocket for options data
 let cachedAccessToken = null;
 let tokenCacheTime = null;
 const TOKEN_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
@@ -180,6 +181,99 @@ const getMarketFeedUrl = async () => {
   }
 };
 
+// Function to establish WebSocket connection for options data
+const connectOptionsWebSocket = async (wsUrl) => {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(wsUrl, {
+      followRedirects: true,
+    });
+
+    // WebSocket event handlers for options
+    ws.on("open", () => {
+      console.log("✅ Connected to Upstox Options WebSocket");
+      resolve(ws); // Resolve the promise once connected
+
+      // Automatically subscribe to some test option instruments after connection
+      setTimeout(() => {
+        const data = {
+          guid: "optionsautosub",
+          method: "sub",
+          data: {
+            mode: "option_greeks",
+            instrumentKeys: [
+              "NSE_FO|45450", // Example option instrument key
+              "NSE_FO|45451", // Add more option instrument keys as needed
+            ],
+          },
+        };
+        console.log("📡 Sending automatic options subscription:", JSON.stringify(data, null, 2));
+        ws.send(Buffer.from(JSON.stringify(data)));
+        console.log("📡 Sent automatic options subscription to Upstox");
+      }, 1000);
+    });
+
+    ws.on("close", () => {
+      console.log("🔌 Disconnected from Upstox Options WebSocket");
+      optionsWs = null;
+    });
+
+    ws.on("message", (data) => {
+      try {
+        // Decode the protobuf message
+        const decoded = decodeProfobuf(data);
+
+        if (decoded) {
+          // Log the decoded data structure for debugging
+          console.log("Options decoded data structure:", JSON.stringify(decoded, null, 2));
+
+          // Send the decoded options data to all connected Socket.IO clients
+          io.emit("optionsData", decoded);
+
+          // Extract and send Option Greeks data if available
+          if (decoded.feeds) {
+            const optionGreeksData = {};
+
+            Object.keys(decoded.feeds).forEach((key) => {
+              const feed = decoded.feeds[key];
+              
+              // Extract option Greeks from the feed
+              const optionGreeks = 
+                feed.optionGreeks ||
+                (feed.ff && 
+                 feed.ff.marketFF && 
+                 feed.ff.marketFF.optionGreeks) ||
+                feed.greeks;
+
+              if (optionGreeks) {
+                optionGreeksData[key] = {
+                  delta: optionGreeks.delta,
+                  gamma: optionGreeks.gamma,
+                  theta: optionGreeks.theta,
+                  vega: optionGreeks.vega,
+                  iv: optionGreeks.iv, // Implied Volatility
+                  ltp: feed.ltp || (feed.ff && feed.ff.marketFF && feed.ff.marketFF.ltpc && feed.ff.marketFF.ltpc.ltp),
+                  timestamp: decoded.currentTs || Date.now()
+                };
+              }
+            });
+
+            if (Object.keys(optionGreeksData).length > 0) {
+              io.emit("optionGreeks", { timestamp: Date.now(), data: optionGreeksData });
+            }
+          }
+        }
+      } catch (error) {
+        console.error("❌ Error processing options message:", error);
+      }
+    });
+
+    ws.on("error", (error) => {
+      console.log("❌ Upstox Options WebSocket error:", error);
+      reject(error); // Reject the promise on error
+    });
+  });
+};
+
 // Function to establish WebSocket connection
 const connectWebSocket = async (wsUrl) => {
   return new Promise((resolve, reject) => {
@@ -200,13 +294,7 @@ const connectWebSocket = async (wsUrl) => {
             mode: "full",
             instrumentKeys: [
               "NSE_INDEX|Nifty Bank",
-              "NSE_INDEX|Nifty 50",
-              "NSE_INDEX|Nifty IT",
-              "NSE_EQ|INE002A01018", // RELIANCE
-              "NSE_EQ|INE040A01034", // HDFC BANK
-              "NSE_EQ|INE009A01021", // INFOSYS
-              "NSE_EQ|INE030A01027", // BHARTI AIRTEL
-              "NSE_EQ|INE062A01020",
+
             ],
             // instrumentKeys: ["NSE_FO|60907"],
           },
@@ -359,6 +447,61 @@ io.on("connection", (socket) => {
       });
     }
   });
+
+  // Handle subscription requests for options from frontend
+  socket.on("subscribeOptions", async (instruments) => {
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      socket.emit("error", { message: "Options WebSocket not connected" });
+      return;
+    }
+
+    try {
+      const data = {
+        guid: "optionsrequest",
+        method: "sub",
+        data: {
+          mode: "option_greeks", // Specific mode for option Greeks
+          instrumentKeys: Array.isArray(instruments)
+            ? instruments
+            : [
+                "NSE_FO|50904"
+              ],
+        },
+      };
+
+      optionsWs.send(Buffer.from(JSON.stringify(data)));
+      socket.emit("optionsSubscribed", { instruments: data.data.instrumentKeys });
+    } catch (error) {
+      socket.emit("error", {
+        message: "Failed to send options subscription: " + error.message,
+      });
+    }
+  });
+
+  // Handle unsubscribe requests for options
+  socket.on("unsubscribeOptions", async (instruments) => {
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      socket.emit("error", { message: "Options WebSocket not connected" });
+      return;
+    }
+
+    try {
+      const data = {
+        guid: "optionsunsubscribe",
+        method: "unsub",
+        data: {
+          instrumentKeys: Array.isArray(instruments) ? instruments : [],
+        },
+      };
+
+      optionsWs.send(Buffer.from(JSON.stringify(data)));
+      socket.emit("optionsUnsubscribed", { instruments: data.data.instrumentKeys });
+    } catch (error) {
+      socket.emit("error", {
+        message: "Failed to unsubscribe options: " + error.message,
+      });
+    }
+  });
 });
 
 // API Routes
@@ -381,8 +524,216 @@ app.get("/start", async (req, res) => {
 app.get("/status", (req, res) => {
   res.json({
     connected: upstoxWs && upstoxWs.readyState === WebSocket.OPEN,
+    optionsConnected: optionsWs && optionsWs.readyState === WebSocket.OPEN,
     protobufInitialized: protobufRoot !== null,
   });
+});
+
+// API endpoint to start options WebSocket connection
+app.get("/api/options/start", async (req, res) => {
+  try {
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      console.log("🚀 Starting Options WebSocket connection...");
+      const wsUrl = await getMarketFeedUrl();
+      optionsWs = await connectOptionsWebSocket(wsUrl);
+      res.json({ success: true, message: "Options WebSocket connection started" });
+    } else {
+      res.json({ success: true, message: "Options WebSocket already connected" });
+    }
+  } catch (error) {
+    console.error("❌ Failed to start Options WebSocket:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// API endpoint to subscribe to specific option instruments
+app.post("/api/options/subscribe", async (req, res) => {
+  try {
+    const { instrumentKeys, mode = "option_greeks" } = req.body;
+
+    if (!instrumentKeys || !Array.isArray(instrumentKeys)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "instrumentKeys array is required" 
+      });
+    }
+
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Options WebSocket not connected. Call /api/options/start first." 
+      });
+    }
+
+    const data = {
+      guid: "api_options_request",
+      method: "sub",
+      data: {
+        mode: mode, // option_greeks, full, or ltpc
+        instrumentKeys: instrumentKeys,
+      },
+    };
+
+    optionsWs.send(Buffer.from(JSON.stringify(data)));
+    
+    res.json({ 
+      success: true, 
+      message: "Successfully subscribed to option instruments",
+      data: {
+        instrumentKeys: instrumentKeys,
+        mode: mode,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to subscribe to options",
+      details: error.message 
+    });
+  }
+});
+
+// API endpoint to unsubscribe from option instruments
+app.post("/api/options/unsubscribe", async (req, res) => {
+  try {
+    const { instrumentKeys } = req.body;
+
+    if (!instrumentKeys || !Array.isArray(instrumentKeys)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "instrumentKeys array is required" 
+      });
+    }
+
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Options WebSocket not connected" 
+      });
+    }
+
+    const data = {
+      guid: "api_options_unsub",
+      method: "unsub",
+      data: {
+        instrumentKeys: instrumentKeys,
+      },
+    };
+
+    optionsWs.send(Buffer.from(JSON.stringify(data)));
+    
+    res.json({ 
+      success: true, 
+      message: "Successfully unsubscribed from option instruments",
+      data: {
+        instrumentKeys: instrumentKeys,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to unsubscribe from options",
+      details: error.message 
+    });
+  }
+});
+
+// API endpoint to get options connection status
+app.get("/api/options/status", (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      optionsConnected: optionsWs && optionsWs.readyState === WebSocket.OPEN,
+      connectionState: optionsWs ? optionsWs.readyState : null,
+      protobufInitialized: protobufRoot !== null,
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+// Debug endpoint to test options data flow
+app.get("/api/options/debug", (req, res) => {
+  try {
+    const debugInfo = {
+      optionsWebSocket: {
+        exists: !!optionsWs,
+        readyState: optionsWs ? optionsWs.readyState : null,
+        readyStateText: optionsWs ? 
+          (optionsWs.readyState === 0 ? 'CONNECTING' :
+           optionsWs.readyState === 1 ? 'OPEN' :
+           optionsWs.readyState === 2 ? 'CLOSING' :
+           optionsWs.readyState === 3 ? 'CLOSED' : 'UNKNOWN') : null
+      },
+      protobuf: {
+        initialized: !!protobufRoot,
+        rootExists: !!protobufRoot
+      },
+      accessToken: {
+        cached: !!cachedAccessToken,
+        cacheTime: tokenCacheTime ? new Date(tokenCacheTime).toISOString() : null
+      },
+      socketIO: {
+        connectedClients: io.engine.clientsCount
+      },
+      timestamp: new Date().toISOString()
+    };
+
+    res.json({
+      success: true,
+      debug: debugInfo
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// Test endpoint to manually trigger options subscription
+app.post("/api/options/test-subscribe", (req, res) => {
+  try {
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      return res.status(400).json({
+        success: false,
+        error: "Options WebSocket not connected",
+        readyState: optionsWs ? optionsWs.readyState : null
+      });
+    }
+
+    const testInstruments = req.body.instrumentKeys || [
+      "NSE_FO|45450",
+      "NSE_FO|45451"
+    ];
+
+    const data = {
+      guid: "manual_test_" + Date.now(),
+      method: "sub",
+      data: {
+        mode: "option_greeks",
+        instrumentKeys: testInstruments,
+      },
+    };
+
+    console.log("📡 Manual test subscription:", JSON.stringify(data, null, 2));
+    optionsWs.send(Buffer.from(JSON.stringify(data)));
+
+    res.json({
+      success: true,
+      message: "Test subscription sent",
+      data: data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.stack
+    });
+  }
 });
 
 // API endpoint to get current access token info

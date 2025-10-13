@@ -29,6 +29,15 @@ A Node.js and Express backend API for stock market data, designed for deployment
 | GET | `/api/stocks/:symbol` | Get specific stock by symbol |
 | GET | `/run-highlow-job` | Manually trigger the 52-week high/low calculation job |
 | GET | `/health` | Health check endpoint for the 52-week high/low job |
+| GET | `/start` | Start the main WebSocket connection for market data |
+| GET | `/status` | Get connection status for both market data and options |
+| GET | `/api/options/start` | Start the options WebSocket connection |
+| POST | `/api/options/subscribe` | Subscribe to specific option instruments |
+| POST | `/api/options/unsubscribe` | Unsubscribe from option instruments |
+| GET | `/api/options/status` | Get options connection status |
+| GET | `/api/token/info` | Get current access token information |
+| POST | `/api/token/update` | Update access token |
+| GET | `/api/token/test` | Test current access token validity |
 
 ### Example Responses
 
@@ -74,6 +83,134 @@ Response:
   }
 }
 ```
+
+## Options Data API
+
+The API now includes dedicated endpoints for live options data streaming using Upstox's Market Data Feed V3. This allows you to get real-time option Greeks (Delta, Gamma, Theta, Vega) and other option-specific data.
+
+### Options Endpoints Usage
+
+#### 1. Start Options Connection
+```bash
+GET /api/options/start
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Options WebSocket connection started"
+}
+```
+
+#### 2. Subscribe to Option Instruments
+```bash
+POST /api/options/subscribe
+Content-Type: application/json
+
+{
+  "instrumentKeys": ["NSE_FO|45450", "NSE_FO|45451"],
+  "mode": "option_greeks"
+}
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "Successfully subscribed to option instruments",
+  "data": {
+    "instrumentKeys": ["NSE_FO|45450", "NSE_FO|45451"],
+    "mode": "option_greeks",
+    "timestamp": "2024-01-15T10:30:00.000Z"
+  }
+}
+```
+
+#### 3. Unsubscribe from Option Instruments
+```bash
+POST /api/options/unsubscribe
+Content-Type: application/json
+
+{
+  "instrumentKeys": ["NSE_FO|45450"]
+}
+```
+
+#### 4. Check Options Connection Status
+```bash
+GET /api/options/status
+```
+
+Response:
+```json
+{
+  "success": true,
+  "data": {
+    "optionsConnected": true,
+    "connectionState": 1,
+    "protobufInitialized": true,
+    "timestamp": "2024-01-15T10:30:00.000Z"
+  }
+}
+```
+
+### Socket.IO Events for Options
+
+When connected via Socket.IO, you can listen to these events for real-time options data:
+
+#### Events to Listen:
+- `optionsData` - Raw options data from Upstox
+- `optionGreeks` - Processed option Greeks data
+
+#### Events to Emit:
+- `subscribeOptions` - Subscribe to option instruments
+- `unsubscribeOptions` - Unsubscribe from option instruments
+
+#### Example Frontend Usage:
+```javascript
+const socket = io('http://localhost:3001');
+
+// Listen for option Greeks data
+socket.on('optionGreeks', (data) => {
+  console.log('Option Greeks received:', data);
+  // data.data contains instrument-wise Greeks:
+  // {
+  //   "NSE_FO|45450": {
+  //     "delta": 0.65,
+  //     "gamma": 0.02,
+  //     "theta": -0.05,
+  //     "vega": 0.15,
+  //     "iv": 18.5,
+  //     "ltp": 219.3,
+  //     "timestamp": 1640995200000
+  //   }
+  // }
+});
+
+// Subscribe to specific options
+socket.emit('subscribeOptions', ['NSE_FO|45450', 'NSE_FO|45451']);
+```
+
+### Supported Modes
+
+- `option_greeks` - Contains only option Greeks data
+- `full` - Includes LTPC, 5 market level quotes, extended feed metadata, and option Greeks
+- `ltpc` - Contains only the latest trading price (LTP) and close price (CP) changes
+
+### Important Notes
+
+1. **Connection Limits**: According to Upstox V3 documentation:
+   - Normal users: 2 connections per user
+   - Upstox Plus users: 5 connections per user
+
+2. **Subscription Limits**:
+   - Option Greeks: 3000 instrument keys (individual), 2000 (combined)
+   - Full mode: 2000 instrument keys (individual), 1500 (combined)
+
+3. **Authentication**: Ensure you have a valid access token stored in the database using the `/api/token/update` endpoint.
+
+4. **Instrument Keys**: Use proper NSE_FO format for option instruments (e.g., "NSE_FO|45450").
 
 ## Local Development Setup
 
