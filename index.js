@@ -160,6 +160,44 @@ const saveAccessTokenToDB = async (token, expiresAt = null, provider = 'upstox')
   }
 };
 
+// Function to get available instruments for testing
+const getTestInstruments = async () => {
+  try {
+    const accessToken = await getAccessTokenFromDB();
+    const url = "https://api.upstox.com/v3/instrument/search?query=NIFTY";
+    const headers = {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    };
+    
+    console.log('🔍 Fetching available instruments...');
+    const response = await axios.get(url, { headers });
+    
+    if (response.data && response.data.data) {
+      // Filter for options instruments
+      const optionsInstruments = response.data.data.filter(instrument => 
+        instrument.segment === 'NSE_FO' && 
+        instrument.name.includes('NIFTY') &&
+        (instrument.name.includes('CE') || instrument.name.includes('PE'))
+      ).slice(0, 10); // Get first 10 options
+      
+      console.log('✅ Found options instruments:', optionsInstruments.length);
+      return optionsInstruments.map(inst => `${inst.exchange}|${inst.instrument_token}`);
+    }
+    
+    return [];
+  } catch (error) {
+    console.error('❌ Failed to fetch instruments:', error.message);
+    // Return fallback instruments
+    return [
+      "NSE_FO|45450", // Nifty Call Option
+      "NSE_FO|45451", // Nifty Put Option
+      "NSE_FO|50904", // Bank Nifty Call Option
+      "NSE_FO|50923"  // Bank Nifty Put Option
+    ];
+  }
+};
+
 // Function to authorize the market data feed
 const getMarketFeedUrl = async () => {
   try {
@@ -191,76 +229,192 @@ const connectOptionsWebSocket = async (wsUrl) => {
     // WebSocket event handlers for options
     ws.on("open", () => {
       console.log("✅ Connected to Upstox Options WebSocket");
-      resolve(ws); // Resolve the promise once connected
+      resolve(ws);
 
-      // Automatically subscribe to some test option instruments after connection
+      // Set up heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          console.log("💓 Sending heartbeat ping");
+          ws.ping();
+        } else {
+          clearInterval(heartbeat);
+        }
+      }, 30000); // Every 30 seconds
+
+      // Try multiple subscription attempts with different modes and instruments
       setTimeout(() => {
-        const data = {
-          guid: "optionsautosub",
+        // First try with LTPC mode for basic connectivity test
+        const ltpcTest = {
+          guid: "ltpc_test_" + Date.now(),
           method: "sub",
           data: {
-            mode: "option_greeks",
+            mode: "ltpc",
             instrumentKeys: [
-              "NSE_FO|45450", // Example option instrument key
-              "NSE_FO|45451", // Add more option instrument keys as needed
+              "NSE_INDEX|Nifty 50", // Known working instrument
+              "NSE_INDEX|Nifty Bank" // Another known working instrument
             ],
           },
         };
-        console.log("📡 Sending automatic options subscription:", JSON.stringify(data, null, 2));
-        ws.send(Buffer.from(JSON.stringify(data)));
-        console.log("📡 Sent automatic options subscription to Upstox");
+        
+        console.log("📡 Sending LTPC test subscription:", JSON.stringify(ltpcTest, null, 2));
+        ws.send(Buffer.from(JSON.stringify(ltpcTest)));
+        
+        // Then try option instruments with option_greeks mode
+        setTimeout(() => {
+          const optionGreeksTest = {
+            guid: "options_greeks_" + Date.now(),
+            method: "sub",
+            data: {
+              mode: "option_greeks",
+              instrumentKeys: [
+                "NSE_FO|45450", // Nifty options
+                "NSE_FO|45451", // Nifty options
+                "NSE_FO|50904", // Bank Nifty options
+                "NSE_FO|50923", // Bank Nifty options
+                "NSE_FO|60907"  // Another option
+              ],
+            },
+          };
+          
+          console.log("📡 Sending option Greeks subscription:", JSON.stringify(optionGreeksTest, null, 2));
+          ws.send(Buffer.from(JSON.stringify(optionGreeksTest)));
+        }, 2000);
+
+        // Also try full mode for comparison
+        setTimeout(() => {
+          const fullModeTest = {
+            guid: "options_full_" + Date.now(),
+            method: "sub",
+            data: {
+              mode: "full",
+              instrumentKeys: [
+                "NSE_FO|45450",
+                "NSE_FO|50904"
+              ],
+            },
+          };
+          
+          console.log("📡 Sending full mode subscription:", JSON.stringify(fullModeTest, null, 2));
+          ws.send(Buffer.from(JSON.stringify(fullModeTest)));
+        }, 4000);
       }, 1000);
     });
 
-    ws.on("close", () => {
-      console.log("🔌 Disconnected from Upstox Options WebSocket");
+    ws.on("close", (code, reason) => {
+      console.log(`🔌 Disconnected from Options WebSocket. Code: ${code}, Reason: ${reason}`);
       optionsWs = null;
     });
 
     ws.on("message", (data) => {
       try {
+        console.log("📥 Raw options message received, size:", data.length, "bytes");
+        
         // Decode the protobuf message
         const decoded = decodeProfobuf(data);
 
         if (decoded) {
-          // Log the decoded data structure for debugging
-          console.log("Options decoded data structure:", JSON.stringify(decoded, null, 2));
+          console.log("🔍 Decoded options data:");
+          console.log(JSON.stringify(decoded, null, 2));
 
-          // Send the decoded options data to all connected Socket.IO clients
-          io.emit("optionsData", decoded);
+          // Send to Socket.IO clients
+          io.emit("optionsData", {
+            timestamp: Date.now(),
+            data: decoded
+          });
 
-          // Extract and send Option Greeks data if available
+          // Extract and process Option Greeks data with enhanced parsing
           if (decoded.feeds) {
             const optionGreeksData = {};
+            let foundGreeks = false;
 
             Object.keys(decoded.feeds).forEach((key) => {
               const feed = decoded.feeds[key];
               
-              // Extract option Greeks from the feed
-              const optionGreeks = 
-                feed.optionGreeks ||
-                (feed.ff && 
-                 feed.ff.marketFF && 
-                 feed.ff.marketFF.optionGreeks) ||
-                feed.greeks;
+              console.log(`📊 Processing feed for instrument ${key}:`);
+              console.log(JSON.stringify(feed, null, 2));
+
+              // Parse according to protobuf structure
+              let optionGreeks = null;
+              let ltp = null;
+              let vtt = null;
+              let oi = null;
+              let iv = null;
+
+              // Check for firstLevelWithGreeks structure (option_greeks mode)
+              if (feed.firstLevelWithGreeks) {
+                const flwg = feed.firstLevelWithGreeks;
+                optionGreeks = flwg.optionGreeks;
+                ltp = flwg.ltpc ? flwg.ltpc.ltp : null;
+                vtt = flwg.vtt;
+                oi = flwg.oi;
+                iv = flwg.iv;
+                
+                console.log(`📋 Found firstLevelWithGreeks structure for ${key}`);
+              }
+              // Check for fullFeed structure (full mode)
+              else if (feed.fullFeed && feed.fullFeed.marketFF) {
+                const marketFF = feed.fullFeed.marketFF;
+                optionGreeks = marketFF.optionGreeks;
+                ltp = marketFF.ltpc ? marketFF.ltpc.ltp : null;
+                vtt = marketFF.vtt;
+                oi = marketFF.oi;
+                iv = marketFF.iv;
+                
+                console.log(`📋 Found fullFeed.marketFF structure for ${key}`);
+              }
+              // Check for direct LTPC structure
+              else if (feed.ltpc) {
+                ltp = feed.ltpc.ltp;
+                console.log(`📋 Found LTPC only structure for ${key}`);
+              }
 
               if (optionGreeks) {
+                foundGreeks = true;
                 optionGreeksData[key] = {
-                  delta: optionGreeks.delta,
-                  gamma: optionGreeks.gamma,
-                  theta: optionGreeks.theta,
-                  vega: optionGreeks.vega,
-                  iv: optionGreeks.iv, // Implied Volatility
-                  ltp: feed.ltp || (feed.ff && feed.ff.marketFF && feed.ff.marketFF.ltpc && feed.ff.marketFF.ltpc.ltp),
+                  delta: optionGreeks.delta || 0,
+                  gamma: optionGreeks.gamma || 0,
+                  theta: optionGreeks.theta || 0,
+                  vega: optionGreeks.vega || 0,
+                  rho: optionGreeks.rho || 0,
+                  iv: iv || 0, // Implied Volatility
+                  ltp: ltp || 0,
+                  vtt: vtt || 0, // Volume traded today
+                  oi: oi || 0, // Open Interest
                   timestamp: decoded.currentTs || Date.now()
                 };
+                
+                console.log(`✅ Found Greeks for ${key}:`, optionGreeksData[key]);
+              } else if (ltp) {
+                // Even if no Greeks, capture the LTP data
+                optionGreeksData[key] = {
+                  ltp: ltp,
+                  vtt: vtt || 0,
+                  oi: oi || 0,
+                  iv: iv || 0,
+                  timestamp: decoded.currentTs || Date.now(),
+                  note: "LTP only - no Greeks available"
+                };
+                console.log(`📊 Found LTP data for ${key}:`, optionGreeksData[key]);
+              } else {
+                console.log(`❌ No Greeks or LTP found for ${key}`);
+                console.log(`Available fields:`, Object.keys(feed));
               }
             });
 
-            if (Object.keys(optionGreeksData).length > 0) {
-              io.emit("optionGreeks", { timestamp: Date.now(), data: optionGreeksData });
+            if (foundGreeks || Object.keys(optionGreeksData).length > 0) {
+              console.log("📈 Emitting option data:", optionGreeksData);
+              io.emit("optionGreeks", { 
+                timestamp: Date.now(), 
+                data: optionGreeksData 
+              });
+            } else {
+              console.log("⚠️ No option data found in any feed");
             }
+          } else {
+            console.log("⚠️ No feeds found in decoded data");
           }
+        } else {
+          console.log("❌ Failed to decode options message");
         }
       } catch (error) {
         console.error("❌ Error processing options message:", error);
@@ -268,8 +422,16 @@ const connectOptionsWebSocket = async (wsUrl) => {
     });
 
     ws.on("error", (error) => {
-      console.log("❌ Upstox Options WebSocket error:", error);
-      reject(error); // Reject the promise on error
+      console.error("❌ Options WebSocket error:", error);
+      reject(error);
+    });
+
+    ws.on("ping", () => {
+      console.log("🏓 Received ping from server");
+    });
+
+    ws.on("pong", () => {
+      console.log("🏓 Received pong from server");
     });
   });
 };
@@ -546,6 +708,23 @@ app.get("/api/options/start", async (req, res) => {
   }
 });
 
+// Simplified endpoint for easier access
+app.get("/options/start", async (req, res) => {
+  try {
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      console.log("🚀 Starting Options WebSocket connection...");
+      const wsUrl = await getMarketFeedUrl();
+      optionsWs = await connectOptionsWebSocket(wsUrl);
+      res.json({ success: true, message: "Options WebSocket connection started" });
+    } else {
+      res.json({ success: true, message: "Options WebSocket already connected" });
+    }
+  } catch (error) {
+    console.error("❌ Failed to start Options WebSocket:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // API endpoint to subscribe to specific option instruments
 app.post("/api/options/subscribe", async (req, res) => {
   try {
@@ -574,6 +753,55 @@ app.post("/api/options/subscribe", async (req, res) => {
       },
     };
 
+    optionsWs.send(Buffer.from(JSON.stringify(data)));
+    
+    res.json({ 
+      success: true, 
+      message: "Successfully subscribed to option instruments",
+      data: {
+        instrumentKeys: instrumentKeys,
+        mode: mode,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to subscribe to options",
+      details: error.message 
+    });
+  }
+});
+
+// Simplified endpoint for easier access
+app.post("/options/subscribe", async (req, res) => {
+  try {
+    const { instrumentKeys, mode = "option_greeks" } = req.body;
+
+    if (!instrumentKeys || !Array.isArray(instrumentKeys)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "instrumentKeys array is required" 
+      });
+    }
+
+    if (!optionsWs || optionsWs.readyState !== WebSocket.OPEN) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Options WebSocket not connected. Call /options/start first." 
+      });
+    }
+
+    const data = {
+      guid: "options_request_" + Date.now(),
+      method: "sub",
+      data: {
+        mode: mode,
+        instrumentKeys: instrumentKeys,
+      },
+    };
+
+    console.log("📡 Options subscription request:", JSON.stringify(data, null, 2));
     optionsWs.send(Buffer.from(JSON.stringify(data)));
     
     res.json({ 
@@ -640,8 +868,63 @@ app.post("/api/options/unsubscribe", async (req, res) => {
   }
 });
 
+// API endpoint to get available instruments for options trading
+app.get("/api/options/instruments", async (req, res) => {
+  try {
+    const instruments = await getTestInstruments();
+    res.json({
+      success: true,
+      data: {
+        instruments: instruments,
+        count: instruments.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch instruments",
+      details: error.message
+    });
+  }
+});
+
+// Simplified endpoint for easier access
+app.get("/options/instruments", async (req, res) => {
+  try {
+    const instruments = await getTestInstruments();
+    res.json({
+      success: true,
+      data: {
+        instruments: instruments,
+        count: instruments.length,
+        timestamp: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch instruments",
+      details: error.message
+    });
+  }
+});
+
 // API endpoint to get options connection status
 app.get("/api/options/status", (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      optionsConnected: optionsWs && optionsWs.readyState === WebSocket.OPEN,
+      connectionState: optionsWs ? optionsWs.readyState : null,
+      protobufInitialized: protobufRoot !== null,
+      timestamp: new Date().toISOString()
+    }
+  });
+});
+
+// Simplified endpoint for easier access
+app.get("/options/status", (req, res) => {
   res.json({
     success: true,
     data: {
