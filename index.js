@@ -173,44 +173,45 @@ const saveAccessTokenToDB = async (
 };
 
 // Function to get available instruments for testing
+// In api.md, update the getTestInstruments function:
 const getTestInstruments = async () => {
   try {
     const accessToken = await getAccessTokenFromDB();
-    const url = "https://api.upstox.com/v3/instrument/search";
+    
+    // Get Nifty 50 options for current month expiry
+    const url = "https://api.upstox.com/v2/option/chain";
+    const params = {
+      instrument_key: "NSE_INDEX|Nifty 50",
+      expiry_date: "2025-10-28" // Change this to the current month's expiry
+
+    };
+    
     const headers = {
       Accept: "application/json",
       Authorization: `Bearer ${accessToken}`,
     };
 
-    console.log("🔍 Fetching available instruments...");
-    const response = await axios.get(url, { headers });
+    console.log("🔍 Fetching Nifty 50 option chain...");
+    const response = await axios.get(url, { headers, params });
 
     if (response.data && response.data.data) {
-      // Filter for options instruments
-      const optionsInstruments = response.data.data
-        .filter(
-          (instrument) =>
-            instrument.segment === "NSE_FO" &&
-            instrument.name.includes("NIFTY") &&
-            (instrument.name.includes("CE") || instrument.name.includes("PE"))
-        )
-        .slice(0, 10); // Get first 10 options
-
-      console.log("✅ Found options instruments:", optionsInstruments.length);
-      return optionsInstruments.map(
-        (inst) => `${inst.exchange}|${inst.instrument_token}`
+      // Return all option instrument keys
+      return response.data.data.map(
+        (opt) => opt.instrument_key
       );
     }
 
     return [];
   } catch (error) {
-    console.error("❌ Failed to fetch instruments:", error.message);
+    console.error("❌ Failed to fetch option chain:", error.message);
     // Return fallback instruments
     return [
-      "NSE_FO|50923", // Bank Nifty Put Option
+      // "NSE_FO|45450", "NSE_FO|45451",
+      "NSE_FO|50904", "NSE_FO|50905",
     ];
   }
 };
+
 
 // Function to authorize the market data feed
 const getMarketFeedUrl = async () => {
@@ -618,7 +619,9 @@ io.on("connection", (socket) => {
           mode: "full", // Full mode for complete option data
           instrumentKeys: Array.isArray(instruments)
             ? instruments
-            : ["NSE_FO|50904"],
+            : ["NSE_FO|50904",
+              "NSE_FO|50905"
+            ],
         },
       };
 

@@ -230,7 +230,8 @@ const connectOptionsWebSocket = async (wsUrl) => {
                 // "NSE_FO|45450", // Nifty options
                 // "NSE_FO|45451", // Nifty options
                 // "NSE_FO|50904", // Bank Nifty options
-                "NSE_FO|50923", // Bank Nifty options
+                // "NSE_FO|50923", // Bank Nifty options
+                "NSE_FO|50904", // Bank Nifty options
                 // "NSE_FO|60907"  // Another option
               ],
             },
