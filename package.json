@@ -27,6 +27,8 @@
     "node-cron": "^4.2.1",
     "protobufjs": "^7.2.5",
     "socket.io": "^4.8.1",
+    "upstox-js-sdk": "^2.20.0",
+    "uuid": "^13.0.0",
     "winston": "^3.11.0",
     "ws": "^8.14.2"
   },

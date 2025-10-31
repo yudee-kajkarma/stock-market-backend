@@ -390,6 +390,115 @@ To integrate with other stock market APIs, you can:
 
 3. **Update the endpoints to fetch real data**
 
+## Option Chain Client
+
+The `option-chain-client.js` is a standalone client script that demonstrates how to fetch and monitor option chain data from your API endpoint with auto-refresh capabilities.
+
+### Features
+
+- 🔄 Auto-refresh option chain data at configurable intervals
+- 📊 Real-time option chain monitoring
+- 🎯 Support for custom instrument keys and expiry dates
+- 💻 Command-line interface with multiple modes
+- 🛑 Graceful shutdown handling
+- 📦 Can be used as a module or standalone script
+
+### Usage
+
+#### 1. Auto-Refresh Mode (Default)
+
+Continuously fetch option chain data every 2 seconds:
+
+```bash
+node option-chain-client.js
+```
+
+Or with custom interval (in seconds):
+
+```bash
+node option-chain-client.js auto 5
+```
+
+This will fetch data every 5 seconds.
+
+#### 2. Fetch Once Mode
+
+Fetch option chain data once and exit:
+
+```bash
+node option-chain-client.js once
+```
+
+With custom instrument and expiry:
+
+```bash
+node option-chain-client.js once "NSE_INDEX|Nifty 50" "2025-11-25"
+```
+
+#### 3. Use as a Module
+
+You can also import and use the client in your own scripts:
+
+```javascript
+const { fetchOptionChain, startAutoRefresh, stopAutoRefresh } = require('./option-chain-client');
+
+// Fetch once
+await fetchOptionChain('NSE_INDEX|Nifty 50', '2025-11-25');
+
+// Start auto-refresh
+startAutoRefresh(3000); // Refresh every 3 seconds
+
+// Stop auto-refresh
+stopAutoRefresh();
+```
+
+### Configuration
+
+Edit the constants at the top of the file to customize default behavior:
+
+```javascript
+const API_BASE_URL = 'http://localhost:3000';
+const INSTRUMENT_KEY = 'NSE_INDEX|Nifty 50';
+const EXPIRY_DATE = '2025-11-25';
+const REFRESH_INTERVAL = 2000; // 2 seconds
+```
+
+### Output Example
+
+```
+📊 Fetching option chain for NSE_INDEX|Nifty 50 (Expiry: 2025-11-25)...
+✅ Successfully fetched option chain data
+⏰ Timestamp: 2025-10-31T10:30:00.000Z
+
+📈 Option Chain Summary (50 strikes):
+────────────────────────────────────────────────────────────────────────────────
+Strike 23000: CALL LTP=245.50 (OI=1250000) | PUT LTP=12.30 (OI=850000)
+Strike 23050: CALL LTP=220.75 (OI=1100000) | PUT LTP=15.80 (OI=920000)
+Strike 23100: CALL LTP=198.25 (OI=980000) | PUT LTP=19.50 (OI=1050000)
+Strike 23150: CALL LTP=177.90 (OI=890000) | PUT LTP=24.20 (OI=1180000)
+Strike 23200: CALL LTP=159.40 (OI=820000) | PUT LTP=30.15 (OI=1320000)
+... and 45 more strikes
+────────────────────────────────────────────────────────────────────────────────
+```
+
+### Stopping the Client
+
+Press `Ctrl+C` to gracefully stop the auto-refresh and exit.
+
+### Prerequisites
+
+- Ensure your API server is running (default: `http://localhost:3000`)
+- The `/api/option-chain` endpoint must be available
+- Valid access token configured in your API
+
+### Error Handling
+
+The client includes comprehensive error handling:
+- Network errors are caught and logged
+- API errors are displayed with details
+- Graceful shutdown on SIGINT/SIGTERM signals
+- Continues running even if individual requests fail
+
 ## Scripts
 
 - `npm start` - Start production server
@@ -397,6 +506,8 @@ To integrate with other stock market APIs, you can:
 - `npm run build` - Build script (for Vercel)
 - `npm run vercel-build` - Vercel build script
 - `node stock-highlow-job.js` - Run the 52-week high/low job as a standalone server
+- `node option-chain-client.js` - Run the option chain client with auto-refresh
+- `node option-chain-client.js once` - Fetch option chain data once and exit
 
 ## Contributing
 

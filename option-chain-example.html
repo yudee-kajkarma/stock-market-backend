@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Option Chain - Auto Refresh</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        .controls input, .controls select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .controls button {
+            padding: 8px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .controls button:hover {
+            background: #0056b3;
+        }
+        .controls button.stop {
+            background: #dc3545;
+        }
+        .controls button.stop:hover {
+            background: #c82333;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        .option-chain {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        .call-side {
+            background: #e8f5e9;
+        }
+        .put-side {
+            background: #ffebee;
+        }
+        .strike-price {
+            font-weight: bold;
+            text-align: center;
+            background: #fff3cd;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 Option Chain - Auto Refresh</h1>
+        
+        <div class="controls">
+            <input type="text" id="instrumentKey" placeholder="Instrument Key" value="NSE_INDEX|Nifty 50">
+            <input type="date" id="expiryDate" placeholder="Expiry Date" value="2025-11-25">
+            <input type="number" id="refreshInterval" placeholder="Refresh (seconds)" value="2" min="1" max="60">
+            <button onclick="startAutoRefresh()">Start Auto Refresh</button>
+            <button class="stop" onclick="stopAutoRefresh()">Stop</button>
+            <button onclick="fetchOnce()">Fetch Once</button>
+        </div>
+
+        <div id="status" class="status info">
+            Ready to fetch option chain data
+        </div>
+    </div>
+
+    <div class="option-chain">
+        <div id="optionChainData" class="loading">
+            Click "Start Auto Refresh" or "Fetch Once" to load data
+        </div>
+    </div>
+
+    <script>
+        let refreshIntervalId = null;
+        const API_BASE_URL = 'http://localhost:3000';
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+        }
+
+        async function fetchOptionChain() {
+            const instrumentKey = document.getElementById('instrumentKey').value;
+            const expiryDate = document.getElementById('expiryDate').value;
+
+            try {
+                showStatus('Fetching option chain data...', 'info');
+                
+                const response = await fetch(
+                    `${API_BASE_URL}/api/option-chain?instrument_key=${encodeURIComponent(instrumentKey)}&expiry_date=${expiryDate}`
+                );
+                
+                const result = await response.json();
+
+                if (result.success) {
+                    displayOptionChain(result.data);
+                    showStatus(`Last updated: ${new Date(result.timestamp).toLocaleTimeString()}`, 'success');
+                } else {
+                    showStatus(`Error: ${result.error}`, 'error');
+                    document.getElementById('optionChainData').innerHTML = 
+                        `<div class="loading">Error: ${result.error}</div>`;
+                }
+            } catch (error) {
+                showStatus(`Network error: ${error.message}`, 'error');
+                document.getElementById('optionChainData').innerHTML = 
+                    `<div class="loading">Network error: ${error.message}</div>`;
+            }
+        }
+
+        function displayOptionChain(data) {
+            const container = document.getElementById('optionChainData');
+            
+            if (!data || !data.data || data.data.length === 0) {
+                container.innerHTML = '<div class="loading">No option chain data available</div>';
+                return;
+            }
+
+            let html = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th colspan="5" class="call-side">CALL OPTIONS</th>
+                            <th class="strike-price">STRIKE</th>
+                            <th colspan="5" class="put-side">PUT OPTIONS</th>
+                        </tr>
+                        <tr>
+                            <th class="call-side">OI</th>
+                            <th class="call-side">Volume</th>
+                            <th class="call-side">LTP</th>
+                            <th class="call-side">Change</th>
+                            <th class="call-side">IV</th>
+                            <th class="strike-price">Price</th>
+                            <th class="put-side">IV</th>
+                            <th class="put-side">Change</th>
+                            <th class="put-side">LTP</th>
+                            <th class="put-side">Volume</th>
+                            <th class="put-side">OI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            data.data.forEach(option => {
+                const strikePrice = option.strike_price || 0;
+                const callData = option.call_options || {};
+                const putData = option.put_options || {};
+
+                html += `
+                    <tr>
+                        <td class="call-side">${callData.market_data?.oi || 0}</td>
+                        <td class="call-side">${callData.market_data?.volume || 0}</td>
+                        <td class="call-side">${callData.market_data?.ltp?.toFixed(2) || '-'}</td>
+                        <td class="call-side">${callData.market_data?.close_price ? 
+                            ((callData.market_data.ltp - callData.market_data.close_price) / callData.market_data.close_price * 100).toFixed(2) + '%' : '-'}</td>
+                        <td class="call-side">${callData.option_greeks?.iv?.toFixed(2) || '-'}</td>
+                        <td class="strike-price">${strikePrice}</td>
+                        <td class="put-side">${putData.option_greeks?.iv?.toFixed(2) || '-'}</td>
+                        <td class="put-side">${putData.market_data?.close_price ? 
+                            ((putData.market_data.ltp - putData.market_data.close_price) / putData.market_data.close_price * 100).toFixed(2) + '%' : '-'}</td>
+                        <td class="put-side">${putData.market_data?.ltp?.toFixed(2) || '-'}</td>
+                        <td class="put-side">${putData.market_data?.volume || 0}</td>
+                        <td class="put-side">${putData.market_data?.oi || 0}</td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            container.innerHTML = html;
+        }
+
+        function startAutoRefresh() {
+            stopAutoRefresh(); // Clear any existing interval
+            
+            const intervalSeconds = parseInt(document.getElementById('refreshInterval').value) || 2;
+            
+            // Fetch immediately
+            fetchOptionChain();
+            
+            // Then set up interval
+            refreshIntervalId = setInterval(fetchOptionChain, intervalSeconds * 1000);
+            
+            showStatus(`Auto-refresh started (every ${intervalSeconds} seconds)`, 'success');
+        }
+
+        function stopAutoRefresh() {
+            if (refreshIntervalId) {
+                clearInterval(refreshIntervalId);
+                refreshIntervalId = null;
+                showStatus('Auto-refresh stopped', 'info');
+            }
+        }
+
+        function fetchOnce() {
+            stopAutoRefresh();
+            fetchOptionChain();
+        }
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', stopAutoRefresh);
+    </script>
+</body>
+</html>

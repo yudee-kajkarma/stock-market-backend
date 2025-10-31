@@ -1181,6 +1181,97 @@ app.get("/api/token/test", async (req, res) => {
   }
 });
 
+// API endpoint to get option chain data
+app.get("/api/option-chain", async (req, res) => {
+  try {
+    const instrumentKey = req.query.instrument_key || "NSE_INDEX|Nifty 50";
+    const expiryDate = req.query.expiry_date || "2025-11-25";
+
+    // Get the access token from database
+    const accessToken = await getAccessTokenFromDB();
+
+    if (!accessToken) {
+      return res.status(500).json({
+        success: false,
+        error: "Upstox access token not configured",
+      });
+    }
+
+    const url = "https://api.upstox.com/v2/option/chain";
+    const params = {
+      instrument_key: instrumentKey,
+      expiry_date: expiryDate,
+    };
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    };
+
+    console.log(`📊 Fetching option chain for ${instrumentKey} expiry ${expiryDate}`);
+    const response = await axios.get(url, { params, headers });
+
+    res.json({
+      success: true,
+      data: response.data,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("❌ Option chain error:", error.response?.data || error.message);
+    res.status(error.response?.status || 500).json({
+      success: false,
+      error: error.response?.data?.message || error.message || "Failed to fetch option chain",
+      details: error.response?.data,
+    });
+  }
+});
+
+// Simplified endpoint for easier access
+app.get("/option-chain", async (req, res) => {
+  try {
+    const instrumentKey = req.query.instrument_key || "NSE_INDEX|Nifty 50";
+    const expiryDate = req.query.expiry_date || "2025-11-25";
+
+    const accessToken = await getAccessTokenFromDB();
+
+    if (!accessToken) {
+      return res.status(500).json({
+        success: false,
+        error: "Upstox access token not configured",
+      });
+    }
+
+    const url = "https://api.upstox.com/v2/option/chain";
+    const params = {
+      instrument_key: instrumentKey,
+      expiry_date: expiryDate,
+    };
+
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    };
+
+    console.log(`📊 Fetching option chain for ${instrumentKey} expiry ${expiryDate}`);
+    const response = await axios.get(url, { params, headers });
+
+    res.json({
+      success: true,
+      data: response.data,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("❌ Option chain error:", error.response?.data || error.message);
+    res.status(error.response?.status || 500).json({
+      success: false,
+      error: error.response?.data?.message || error.message || "Failed to fetch option chain",
+      details: error.response?.data,
+    });
+  }
+});
+
 // Start server and initialize
 (async () => {
   try {
