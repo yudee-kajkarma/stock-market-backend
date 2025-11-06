@@ -9,7 +9,7 @@ const axios = require('axios');
 
 // Configuration
 const API_BASE_URL = 'http://localhost:3000';
-const INSTRUMENT_KEY = 'NSE_INDEX|Nifty 50';
+const INSTRUMENT_KEY = 'NSE_INDEX|Nifty Bank';
 const EXPIRY_DATE = '2025-11-25';
 const REFRESH_INTERVAL = 2000; // 2 seconds in milliseconds
 
