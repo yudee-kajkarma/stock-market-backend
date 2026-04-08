@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "additionalDirectories": [
+      "D:\\Projects\\stock-market-frontend"
+    ],
+    "allow": [
+      "Bash(grep -r user_profiles D:/Projects/stock-market-frontend --include=*.ts --include=*.tsx --include=*.js)"
+    ]
+  }
+}

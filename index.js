@@ -28,12 +28,36 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Admin API key authentication middleware
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+
+if (!ADMIN_API_KEY) {
+  console.warn("⚠️  ADMIN_API_KEY not set — admin endpoints are UNPROTECTED. Set it in your .env file.");
+}
+
+const requireAdmin = (req, res, next) => {
+  if (!ADMIN_API_KEY) {
+    // No key configured — allow through (dev mode)
+    return next();
+  }
+
+  const apiKey =
+    req.headers["x-api-key"] ||
+    (req.headers.authorization && req.headers.authorization.replace("Bearer ", ""));
+
+  if (!apiKey || apiKey !== ADMIN_API_KEY) {
+    return res.status(401).json({
+      success: false,
+      error: "Unauthorized. Provide a valid API key via x-api-key header or Authorization: Bearer <key>",
+    });
+  }
+
+  next();
+};
+
 // Configure Supabase client
-const supabaseUrl =
-  process.env.SUPABASE_URL || "https://juisueefqgtvzezrzudv.supabase.co";
-const supabaseKey =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp1aXN1ZWVmcWd0dnplenJ6dWR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTkyMDUzNTcsImV4cCI6MjA3NDc4MTM1N30.zFzHnvlX5cyk7TfbOUZ1zB_depLTNWEzXmhDbcVlXYI";
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   console.error(
@@ -688,7 +712,7 @@ io.on("connection", (socket) => {
 });
 
 // API Routes
-app.get("/start", async (req, res) => {
+app.get("/start", requireAdmin, async (req, res) => {
   try {
     if (!upstoxWs || upstoxWs.readyState !== WebSocket.OPEN) {
       // console.log("🚀 Starting WebSocket connection...");
@@ -1011,7 +1035,7 @@ app.get("/options/status", (req, res) => {
 });
 
 // Debug endpoint to test options data flow
-app.get("/api/options/debug", (req, res) => {
+app.get("/api/options/debug", requireAdmin, (req, res) => {
   try {
     const debugInfo = {
       webSocket: {
@@ -1060,7 +1084,7 @@ app.get("/api/options/debug", (req, res) => {
 });
 
 // Test endpoint to manually trigger options subscription
-app.post("/api/options/test-subscribe", (req, res) => {
+app.post("/api/options/test-subscribe", requireAdmin, (req, res) => {
   try {
     if (!upstoxWs || upstoxWs.readyState !== WebSocket.OPEN) {
       return res.status(400).json({
@@ -1106,7 +1130,7 @@ app.post("/api/options/test-subscribe", (req, res) => {
 });
 
 // API endpoint to get current access token info
-app.get("/api/token/info", async (req, res) => {
+app.get("/api/token/info", requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from("access_tokens")
@@ -1144,7 +1168,7 @@ app.get("/api/token/info", async (req, res) => {
 });
 
 // API endpoint to update access token
-app.post("/api/token/update", async (req, res) => {
+app.post("/api/token/update", requireAdmin, async (req, res) => {
   try {
     const { token, expires_at, provider = "upstox" } = req.body;
 
@@ -1172,7 +1196,7 @@ app.post("/api/token/update", async (req, res) => {
 });
 
 // API endpoint to test current access token
-app.get("/api/token/test", async (req, res) => {
+app.get("/api/token/test", requireAdmin, async (req, res) => {
   try {
     const accessToken = await getAccessTokenFromDB();
 
