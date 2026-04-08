@@ -9,6 +9,9 @@ const axios = require("axios");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
 
+// Log Node.js version on startup
+console.log(`🟢 Node.js ${process.version} | fetch available: ${typeof globalThis.fetch === 'function'}`);
+
 // Setup Express and Socket.io
 const app = express();
 const server = http.createServer(app);
@@ -48,54 +51,69 @@ let cachedAccessToken = null;
 let tokenCacheTime = null;
 const TOKEN_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
 
-// Function to fetch access token from Supabase (single row approach)
-const getAccessTokenFromDB = async () => {
-  try {
-    // Check if we have a cached token that's still valid
-    if (
-      cachedAccessToken &&
-      tokenCacheTime &&
-      Date.now() - tokenCacheTime < TOKEN_CACHE_DURATION
-    ) {
-      console.log("🔄 Using cached access token");
-      return cachedAccessToken;
-    }
+// Helper: delay for ms milliseconds
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    console.log("🔍 Fetching access token from database...");
-
-    // Get the single token row for upstox provider
-    const { data, error } = await supabase
-      .from("access_tokens")
-      .select("token, expires_at")
-      .eq("provider", "upstox")
-      .eq("is_active", true)
-      .limit(1)
-      .single();
-
-    if (error) {
-      console.error("❌ Error fetching access token from database:", error);
-      throw new Error(`Database error: ${error.message}`);
-    }
-
-    if (!data) {
-      throw new Error("No active access token found in database");
-    }
-
-    // Check if token is expired
-    if (data.expires_at && new Date(data.expires_at) < new Date()) {
-      throw new Error("Access token has expired");
-    }
-
-    // Cache the token
-    cachedAccessToken = data.token;
-    tokenCacheTime = Date.now();
-
-    console.log("✅ Successfully fetched access token from database");
-    return data.token;
-  } catch (error) {
-    console.error("❌ Failed to get access token:", error.message);
-    throw error;
+// Function to fetch access token from Supabase (single row approach) with retry
+const getAccessTokenFromDB = async (retries = 3) => {
+  // Check if we have a cached token that's still valid
+  if (
+    cachedAccessToken &&
+    tokenCacheTime &&
+    Date.now() - tokenCacheTime < TOKEN_CACHE_DURATION
+  ) {
+    console.log("🔄 Using cached access token");
+    return cachedAccessToken;
   }
+
+  let lastError;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      console.log(`🔍 Fetching access token from database (attempt ${attempt}/${retries})...`);
+
+      // Get the single token row for upstox provider
+      const { data, error } = await supabase
+        .from("access_tokens")
+        .select("token, expires_at")
+        .eq("provider", "upstox")
+        .eq("is_active", true)
+        .limit(1)
+        .single();
+
+      if (error) {
+        throw new Error(`Database error: ${error.message}`);
+      }
+
+      if (!data) {
+        throw new Error("No active access token found in database");
+      }
+
+      // Check if token is expired
+      if (data.expires_at && new Date(data.expires_at) < new Date()) {
+        throw new Error("Access token has expired");
+      }
+
+      // Cache the token
+      cachedAccessToken = data.token;
+      tokenCacheTime = Date.now();
+
+      console.log("✅ Successfully fetched access token from database");
+      return data.token;
+    } catch (error) {
+      lastError = error;
+      console.error(`❌ Attempt ${attempt}/${retries} failed: ${error.message}`);
+
+      if (attempt < retries) {
+        const backoff = attempt * 2000; // 2s, 4s, 6s
+        console.log(`⏳ Retrying in ${backoff / 1000}s...`);
+        await delay(backoff);
+      }
+    }
+  }
+
+  console.error("❌ All retry attempts failed for getAccessTokenFromDB");
+  throw lastError;
 };
 
 // Function to save access token to database (single row approach)
@@ -1272,21 +1290,43 @@ app.get("/option-chain", async (req, res) => {
   }
 });
 
+// Connect to Upstox WebSocket with retry
+const connectWithRetry = async (maxRetries = 5) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`🚀 WebSocket connection attempt ${attempt}/${maxRetries}...`);
+      const wsUrl = await getMarketFeedUrl();
+      upstoxWs = await connectWebSocket(wsUrl);
+      console.log("✅ Upstox WebSocket connected successfully");
+      return;
+    } catch (error) {
+      console.error(`❌ Attempt ${attempt}/${maxRetries} failed: ${error.message}`);
+
+      if (attempt < maxRetries) {
+        const backoff = attempt * 3000; // 3s, 6s, 9s, 12s
+        console.log(`⏳ Retrying WebSocket connection in ${backoff / 1000}s...`);
+        await delay(backoff);
+      }
+    }
+  }
+
+  console.error("❌ All WebSocket connection attempts failed. Use /start to retry manually.");
+};
+
 // Start server and initialize
 (async () => {
   try {
     // Initialize protobuf first
     await initProtobuf();
 
-    // Start the server
+    // Start the HTTP server immediately (so health checks / /start endpoint work)
     server.listen(PORT, () => {
-      // console.log(`🚀 Server running on http://localhost:${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
     });
 
-    // Auto-connect to Upstox WebSocket on startup
-    const wsUrl = await getMarketFeedUrl();
-    upstoxWs = await connectWebSocket(wsUrl);
+    // Then attempt Upstox WebSocket connection with retries
+    await connectWithRetry();
   } catch (error) {
-    // console.error("❌ Startup error:", error);
+    console.error("❌ Startup error:", error.message);
   }
 })();

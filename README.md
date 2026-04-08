@@ -1,3 +1,12 @@
+https://github.com/jainam-b/stock-market-api
+
+git remote set-url origin
+
+https://github.com/yudee-kajkarma/stock-market-backend
+
+
+
+
 # Stock Market API
 
 A Node.js and Express backend API for stock market data, designed for deployment on Vercel.
