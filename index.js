@@ -711,6 +711,15 @@ io.on("connection", (socket) => {
   });
 });
 
+// Health check route (required for Railway/deployment platforms)
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    uptime: process.uptime(),
+    connected: upstoxWs && upstoxWs.readyState === WebSocket.OPEN,
+  });
+});
+
 // API Routes
 app.get("/start", requireAdmin, async (req, res) => {
   try {
@@ -1344,8 +1353,8 @@ const connectWithRetry = async (maxRetries = 5) => {
     await initProtobuf();
 
     // Start the HTTP server immediately (so health checks / /start endpoint work)
-    server.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
+    server.listen(PORT, "0.0.0.0", () => {
+      console.log(`🚀 Server running on 0.0.0.0:${PORT}`);
     });
 
     // Then attempt Upstox WebSocket connection with retries
